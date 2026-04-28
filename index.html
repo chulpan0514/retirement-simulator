@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>김철민 은퇴 전략 시뮬레이터</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f0f0;color:#111;font-size:14px;line-height:1.5}
+input[type=range]{-webkit-appearance:none;height:4px;border-radius:2px;background:rgba(0,0,0,0.12);outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#378ADD;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,0.2)}
+input[type=number],input[type=text]{outline:none;font-family:inherit}
+button{font-family:inherit}
+@media print{.np{display:none!important;}@page{margin:8mm;size:A4}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const API_URL = "https://script.google.com/macros/s/AKfycbwKXMtR9v_D7zjG2XZnEpSQOoAOkLekNIVnAyFxGRffTTUhI1KzbiKj4No-H5nJxEEx9g/exec";
+const {useState,useEffect}=React;
+const NOW=2026;
+const CHANNELS=[
+  {id:"pen",label:"연금저축 ETF",color:"#378ADD",defM:50,defRt:9,maxM:300},
+  {id:"irp",label:"IRP",color:"#639922",defM:30,defRt:7,maxM:300},
+  {id:"etf",label:"해외 ETF (VOO)",color:"#BA7517",defM:100,defRt:10,maxM:300},
+  {id:"sav",label:"적금·예금",color:"#888780",defM:54,defRt:3,maxM:300},
+  {id:"bon",label:"상여·성과급 운용",color:"#534AB7",defM:230,defRt:8,maxM:700},
+];
+const BRACKETS=[
+  {limit:1400,rate:0.06,ded:0},{limit:5000,rate:0.15,ded:126},
+  {limit:8800,rate:0.24,ded:576},{limit:15000,rate:0.35,ded:1544},
+  {limit:30000,rate:0.38,ded:1994},{limit:50000,rate:0.40,ded:2594},
+  {limit:100000,rate:0.42,ded:3594},{limit:Infinity,rate:0.45,ded:6594},
+];
+function calcTax(sell,buy){
+  const g=sell-buy;if(g<=0)return 0;
+  const base=Math.max(0,g*10000-250);
+  let t=0;for(const b of BRACKETS){if(base<=b.limit){t=base*b.rate-b.ded;break;}}
+  return Math.max(0,t*1.1)/10000;
+}
+function calcTax1(sell,buy){
+  const g=sell-buy;if(g<=0)return 0;if(sell<=12)return 0;
+  const ratio=(sell-12)/sell;
+  const base=Math.max(0,g*ratio*10000-250);
+  let t=0;for(const b of BRACKETS){if(base<=b.limit){t=base*b.rate-b.ded;break;}}
+  return Math.max(0,t*1.1)/10000;
+}
+function compSav(m,r,y){
+  if(y<=0)return 0;const rv=r/100/12,n=Math.round(y*12);
+  if(rv<1e-9)return m*n;return m*(Math.pow(1+rv,n)-1)/rv;
+}
+// 원리금균등상환 월납입액 계산 (억원 → 만원)
+function calcMortgage(loan억, rateY, years){
+  if(loan억<=0||years<=0)return 0;
+  const P=loan억*10000; // 만원
+  const r=rateY/100/12;
+  if(r<1e-9)return P/(years*12);
+  return P*r*Math.pow(1+r,years*12)/(Math.pow(1+r,years*12)-1);
+}
+function proj(b,r,y){return b*Math.pow(1+r/100,y);}
+function f억(v){return(Math.round(v*10)/10).toFixed(1)+"억";}
+function f억2(v){return(Math.round(v*100)/100).toFixed(2)+"억";}
+function fM(v){return Math.round(v).toLocaleString()+"만";}
+function fM2억(v){return(Math.round(v/1000)/10).toFixed(1)+"억";}
+function f원(v){return Math.round(v).toLocaleString()+"원";}
+function f원K(v){return(v>=10000?`${(v/10000).toFixed(1)}억`:`${Math.round(v/10000*100)/100}억`);}
+function p1(v){const s=(Math.round(v*10)/10).toFixed(1);return(v>=0?"+":"")+s+"%";}
+function p2(v){return(Math.round(v*100)/100).toFixed(2)+"%";}
+function cagr(f,c,y){if(c<=0||y<=0||f<=0)return 0;return(Math.pow(f/c,1/y)-1)*100;}
+function cumR(f,c){if(c<=0)return 0;return(f/c-1)*100;}
+// 현재가치 환산
+function pv(fv,inf,yrs){return fv/Math.pow(1+inf/100,yrs);}
+ 
+function Slider({label,min,max,step,value,onChange,display,color}){
+  return <div style={{marginBottom:8}}>
+    <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+      <span style={{fontSize:12,color:"#666"}}>{label}</span>
+      <span style={{fontSize:12,fontWeight:600,color:color||"#111"}}>{display??value}</span>
+    </div>
+    <input type="range" min={min} max={max} step={step} value={value}
+      onChange={e=>onChange(Number(e.target.value))}
+      style={{width:"100%",accentColor:color||"#378ADD"}}/>
+  </div>;
+}
+function NInput({value,onChange,placeholder,width,step}){
+  return <input type="number" value={value} onChange={e=>onChange(e.target.value)}
+    placeholder={placeholder} step={step||"0.1"} min="0"
+    style={{width:width||72,fontSize:13,padding:"3px 7px",borderRadius:6,
+            border:`0.5px solid ${value?"#378ADD":"rgba(0,0,0,0.2)"}`,
+            background:value?"#E6F1FB":"#f5f5f5",textAlign:"right"}}/>;
+}
+function MC({label,value,sub,sub2,color}){
+  const bg={blue:"#E6F1FB",green:"#EAF3DE",amber:"#FAEEDA",purple:"#EEEDFE",teal:"#E1F5EE",coral:"#FAECE7",indigo:"#EEF0FC",rose:"#FCEEF2"};
+  const tx={blue:"#0C447C",green:"#27500A",amber:"#633806",purple:"#3C3489",teal:"#085041",coral:"#712B13",indigo:"#2B3291",rose:"#7B1A35"};
+  const lb={blue:"#185FA5",green:"#3B6D11",amber:"#854F0B",purple:"#534AB7",teal:"#0F6E56",coral:"#993C1D",indigo:"#3D4EBF",rose:"#A5294D"};
+  return <div style={{background:color?bg[color]:"#f5f5f5",borderRadius:8,padding:"10px 12px"}}>
+    <div style={{fontSize:11,color:color?lb[color]:"#666",marginBottom:3}}>{label}</div>
+    <div style={{fontSize:16,fontWeight:600,color:color?tx[color]:"#111"}}>{value}</div>
+    {sub&&<div style={{fontSize:11,color:color?lb[color]:"#999",marginTop:2}}>{sub}</div>}
+    {sub2&&<div style={{fontSize:10,color:color?lb[color]:"#bbb",marginTop:1}}>{sub2}</div>}
+  </div>;
+}
+function Toggle({on,onChange,label}){
+  return <div style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}} onClick={()=>onChange(!on)}>
+    <div style={{width:36,height:20,borderRadius:10,background:on?"#378ADD":"rgba(0,0,0,0.15)",position:"relative",transition:"background .2s",flexShrink:0}}>
+      <div style={{position:"absolute",top:2,left:on?18:2,width:16,height:16,borderRadius:"50%",background:"#fff",transition:"left .2s",boxShadow:"0 1px 3px rgba(0,0,0,0.25)"}}/>
+    </div>
+    {label&&<span style={{fontSize:12,color:on?"#111":"#999",userSelect:"none"}}>{label}</span>}
+  </div>;
+}
+function RetBox({title,items}){
+  return <div style={{marginBottom:10}}>
+    <div style={{fontSize:11,color:"#999",marginBottom:5,fontWeight:500,textTransform:"uppercase",letterSpacing:".04em"}}>{title}</div>
+    <div style={{border:"0.5px solid rgba(0,0,0,0.12)",borderRadius:8,padding:"10px 14px",display:"grid",gridTemplateColumns:`repeat(${items.length},1fr)`,gap:10}}>
+      {items.map((it,i)=><div key={i} style={{borderLeft:i>0?"0.5px solid rgba(0,0,0,0.12)":"none",paddingLeft:i>0?10:0}}>
+        <div style={{fontSize:11,color:"#999",marginBottom:3}}>{it.label}</div>
+        <div style={{fontSize:17,fontWeight:600,color:it.color||"#111"}}>{it.value}</div>
+        {it.sub&&<div style={{fontSize:11,color:"#999",marginTop:2}}>{it.sub}</div>}
+      </div>)}
+    </div>
+  </div>;
+}
+ 
+function App(){
+  const [title,setTitle]=useState("김철민 은퇴 전략 시뮬레이터");
+  const [subtitle,setSubtitle]=useState("2045 목표 · 부동산 + 금융자산 통합 플랜");
+  const [editT,setEditT]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const [apiLoading,setApiLoading]=useState(false);
+  const [apiMsg,setApiMsg]=useState("");       // 저장/불러오기 메시지
+  const [scenarioName,setScenarioName]=useState("기본 시나리오");
+  const [scenarios,setScenarios]=useState([]); // 시나리오 목록
+  const [showPanel,setShowPanel]=useState(false); // 시나리오 패널 표시
+ 
+  // ── 부동산
+  const [targetYr,setTargetYr]=useState(2045);
+  const [hwYr,setHwYr]=useState(2029);const [hwRt,setHwRt]=useState(5);
+  const [hwD,setHwD]=useState("");const [hwLoan,setHwLoan]=useState(4.5);
+  const [gmYr,setGmYr]=useState(2030);const [gmRt,setGmRt]=useState(7);
+  const [gmD,setGmD]=useState("");const [gmJ,setGmJ]=useState(4.85);
+  const [newYr,setNewYr]=useState(2030);const [newP,setNewP]=useState(15);
+  const [newD,setNewD]=useState("");const [newL,setNewL]=useState(3);const [newRt,setNewRt]=useState(8);
+ 
+  // ── 주담대 상환 계산기
+  const [mortRate,setMortRate]=useState(3.5);   // 이자율 %
+  const [mortYears,setMortYears]=useState(30);  // 상환기간 년
+  // 실제 대출금액은 newL(신규대출)을 기본으로, 별도 조정 슬라이더
+  const [mortLoanAdj,setMortLoanAdj]=useState(0); // 신규대출 대비 조정(0=동일)
+ 
+  // ── 현금
+  const [salary,setSalary]=useState(810);const [bonusY,setBonusY]=useState(2760);
+  const [living,setLiving]=useState(257);const [edu,setEdu]=useState(104);
+  // 저축 종료 = 목표 퇴직 시점 연동 (오프셋으로 미세조정, -5~+5년)
+  const [savEndOffset,setSavEndOffset]=useState(0);
+  const [chM,setChM]=useState(()=>Object.fromEntries(CHANNELS.map(c=>[c.id,c.defM])));
+  const [chRt,setChRt]=useState(()=>Object.fromEntries(CHANNELS.map(c=>[c.id,c.defRt])));
+ 
+  // ── 주식
+  const [stocks,setStocks]=useState([]);const [sN,setSN]=useState("");const [sM,setSM]=useState("");const [sR,setSR]=useState("");const [sid,setSid]=useState(0);
+ 
+  // ── 퇴직연금
+  const [dcOn,setDcOn]=useState(true);const [dcY,setDcY]=useState(1200);const [dcRt,setDcRt]=useState(5);const [dcEx,setDcEx]=useState(3000);
+ 
+  // ── 국민연금·주택연금
+  const [cmAge,setCmAge]=useState(68);const [cmPen,setCmPen]=useState(171);
+  const [yrAge,setYrAge]=useState(68);const [yrPen,setYrPen]=useState(90);
+  const [houseOn,setHouseOn]=useState(true);const [hAge,setHAge]=useState(68);const [hVal,setHVal]=useState(20);
+ 
+  // ── 은퇴 후 금융자산 인출 전략
+  const [infRate,setInfRate]=useState(2.5);      // 물가상승률
+  const [divPct,setDivPct]=useState(50);         // 배당 포트 비중 %
+  const [divRate,setDivRate]=useState(3.5);       // 배당 수익률 %
+  const [sellPct,setSellPct]=useState(50);        // 매도 포트 비중 % (100-divPct)
+  const [annSellPct,setAnnSellPct]=useState(4);  // 매도 포트에서 연간 매도 비율 %
+  const [sellPortRt,setSellPortRt]=useState(8);   // 매도 포트 운용 수익률 %
+ 
+  // ── 주담대 계산
+  const mortLoan = Math.max(0, newL + mortLoanAdj); // 실제 대출금액 (억)
+  const mortMonthly = calcMortgage(mortLoan, mortRate, mortYears); // 만원/월
+ 
+  // ── 부동산 계산
+  const hwSell=hwD!==""&&!isNaN(+hwD)?+hwD:Math.round(proj(8.25,hwRt,hwYr-2024)*10)/10;
+  const gmSell=gmD!==""&&!isNaN(+gmD)?+gmD:Math.round(proj(8.1,gmRt,gmYr-2024)*10)/10;
+  const newBuy=newD!==""&&!isNaN(+newD)?+newD:newP;
+  const hwFirst=hwYr<gmYr;
+  const hwTax=calcTax(hwSell,8.25);
+  const gmTax=hwFirst?calcTax1(gmSell,8.1):calcTax(gmSell,8.1);
+  const pool=Math.round(((hwSell-hwTax-hwLoan)+(gmSell-gmTax-gmJ))*100)/100;
+  const aptFinal=Math.max(0,proj(newBuy,newRt,targetYr-newYr)-newL);
+  const aptCost=16.35;
+ 
+  // ── 현금흐름 (주담대 = 원리금균등상환액 자동 계산)
+  const incomeY=salary*12+bonusY;
+  const expY=(mortMonthly+living+edu)*12;
+  const availY=incomeY-expY;
+  const availM=availY/12;
+ 
+  // ── 채널 누적
+  const savEnd=Math.min(targetYr, Math.max(NOW+1, targetYr+savEndOffset)); // 퇴직연도 연동
+  const savYrs=Math.max(0,savEnd-NOW);const extYrs=Math.max(0,targetYr-savEnd);const totalYrs=targetYr-NOW;
+  const ca={};let fin=0,chMtot=0,prin=0;
+  CHANNELS.forEach(ch=>{
+    const m=chM[ch.id],r=chRt[ch.id];
+    const ae=compSav(m*10000,r,savYrs);const acc=(ae*Math.pow(1+r/100,extYrs))/1e8;
+    ca[ch.id]=Math.round(acc*10)/10;fin+=acc;chMtot+=m;prin+=m*12*savYrs;
+  });
+  let stk=0;stocks.forEach(s=>{const ae=compSav(s.m*10000,s.rt,savYrs);const acc=(ae*Math.pow(1+s.rt/100,extYrs))/1e8;stk+=acc;chMtot+=s.m;prin+=s.m*12*savYrs;});
+  ca["stk"]=Math.round(stk*10)/10;fin+=stk;
+  let dc=0;if(dcOn){const m=dcY/12;const ae=compSav(m*10000,dcRt,savYrs);const nv=(ae*Math.pow(1+dcRt/100,extYrs))/1e8;const ev=(dcEx/10000)*Math.pow(1+dcRt/100,totalYrs);dc=nv+ev;prin+=dcY*savYrs+dcEx;}
+  ca["dc"]=Math.round(dc*10)/10;fin+=dc;fin=Math.round(fin*10)/10;
+  const prin억=prin/10000;
+  const chY=chMtot*12;const allY=chY+(dcOn?dcY:0);
+  const usePct=availY>0?allY/availY*100:0;const remY=availY-allY;
+  const aptCumR=Math.round(cumR(aptFinal,aptCost)*10)/10;const aptAnnR=Math.round(cagr(aptFinal,aptCost,totalYrs)*10)/10;
+  const finCumR=Math.round(cumR(fin,prin억)*10)/10;const finAnnR=Math.round(cagr(fin,prin억,totalYrs)*10)/10;
+  const grand=aptFinal+fin;const totC=aptCost+prin억;
+  const totCumR=Math.round(cumR(grand,totC)*10)/10;const totAnnR=Math.round(cagr(grand,totC,totalYrs)*10)/10;
+ 
+  // ── 은퇴 후 금융자산 인출 전략 계산
+  const divPortAmt = fin * (divPct/100);           // 배당 포트 (억)
+  const sellPortAmt = fin * ((100-divPct)/100);    // 매도 포트 (억)
+  const divIncomeY억 = divPortAmt * divRate/100;   // 연 배당소득 (억)
+  const divIncomeM만 = divIncomeY억*10000/12;      // 월 배당소득 (만원)
+  const sellIncomeY억 = sellPortAmt * annSellPct/100; // 연 매도소득 (억)
+  const sellIncomeM만 = sellIncomeY억*10000/12;    // 월 매도소득 (만원)
+  // 매도 후 원금 유지에 필요한 수익률 = 연간매도비율 (원금보전 목표)
+  const needRet = annSellPct; // 단순: 매도율만큼 수익이 나야 원금 보전
+  // 현재가치 환산 (목표연도→현재)
+  const pvFactor = Math.pow(1+infRate/100, totalYrs);
+  const divIncomeM_pv = divIncomeM만/pvFactor;
+  const sellIncomeM_pv = sellIncomeM만/pvFactor;
+  const divIncomeY_pv = divIncomeY억*10000/pvFactor; // 만원
+  const sellIncomeY_pv = sellIncomeY억*10000/pvFactor;
+ 
+  // ── 국민연금·주택연금
+  const penSum=cmPen+yrPen;
+  const houseMon원=houseOn?Math.round(Math.min(hVal,12)*1e8*(0.0042+(hAge-60)*0.0002)):0;
+  const penPv만 = penSum/pvFactor;
+  const housePv만 = houseMon원/10000/pvFactor;
+  const totalRetireM만 = penSum + divIncomeM만 + sellIncomeM만 + houseMon원/10000;
+  const totalRetireM_pv = penPv만 + divIncomeM_pv + sellIncomeM_pv + housePv만;
+ 
+  function addStk(){const m=parseFloat(sM),r=parseFloat(sR);if(!sN.trim()||isNaN(m)||isNaN(r))return;setStocks(p=>[...p,{id:sid,name:sN.trim(),m,rt:r}]);setSid(n=>n+1);setSN("");setSM("");setSR("");}
+  function delStk(id){setStocks(p=>p.filter(s=>s.id!==id));}
+  function updStk(id,f,v){setStocks(p=>p.map(s=>s.id===id?{...s,[f]:v}:s));}
+  // ── 현재 설정 전체를 객체로 직렬화
+  function getState() {
+    return {
+      title,subtitle,targetYr,savEndOffset,
+      hwYr,hwRt,hwD,hwLoan,gmYr,gmRt,gmD,gmJ,
+      newYr,newP,newD,newL,newRt,mortRate,mortYears,mortLoanAdj,
+      salary,bonusY,living,edu,
+      chM,chRt,
+      stocks,
+      dcOn,dcY,dcRt,dcEx,
+      cmAge,cmPen,yrAge,yrPen,
+      houseOn,hAge,hVal,
+      infRate,divPct,divRate,sellPortRt,annSellPct,
+    };
+  }
+ 
+  // ── 불러온 객체를 state에 복원
+  function applyState(s) {
+    if(!s) return;
+    if(s.title!==undefined) setTitle(s.title);
+    if(s.subtitle!==undefined) setSubtitle(s.subtitle);
+    if(s.targetYr!==undefined) setTargetYr(s.targetYr);
+    if(s.savEndOffset!==undefined) setSavEndOffset(s.savEndOffset);
+    if(s.hwYr!==undefined) setHwYr(s.hwYr);
+    if(s.hwRt!==undefined) setHwRt(s.hwRt);
+    if(s.hwD!==undefined) setHwD(s.hwD);
+    if(s.hwLoan!==undefined) setHwLoan(s.hwLoan);
+    if(s.gmYr!==undefined) setGmYr(s.gmYr);
+    if(s.gmRt!==undefined) setGmRt(s.gmRt);
+    if(s.gmD!==undefined) setGmD(s.gmD);
+    if(s.gmJ!==undefined) setGmJ(s.gmJ);
+    if(s.newYr!==undefined) setNewYr(s.newYr);
+    if(s.newP!==undefined) setNewP(s.newP);
+    if(s.newD!==undefined) setNewD(s.newD);
+    if(s.newL!==undefined) setNewL(s.newL);
+    if(s.newRt!==undefined) setNewRt(s.newRt);
+    if(s.mortRate!==undefined) setMortRate(s.mortRate);
+    if(s.mortYears!==undefined) setMortYears(s.mortYears);
+    if(s.mortLoanAdj!==undefined) setMortLoanAdj(s.mortLoanAdj);
+    if(s.salary!==undefined) setSalary(s.salary);
+    if(s.bonusY!==undefined) setBonusY(s.bonusY);
+    if(s.living!==undefined) setLiving(s.living);
+    if(s.edu!==undefined) setEdu(s.edu);
+    if(s.chM!==undefined) setChM(s.chM);
+    if(s.chRt!==undefined) setChRt(s.chRt);
+    if(s.stocks!==undefined) setStocks(s.stocks);
+    if(s.dcOn!==undefined) setDcOn(s.dcOn);
+    if(s.dcY!==undefined) setDcY(s.dcY);
+    if(s.dcRt!==undefined) setDcRt(s.dcRt);
+    if(s.dcEx!==undefined) setDcEx(s.dcEx);
+    if(s.cmAge!==undefined) setCmAge(s.cmAge);
+    if(s.cmPen!==undefined) setCmPen(s.cmPen);
+    if(s.yrAge!==undefined) setYrAge(s.yrAge);
+    if(s.yrPen!==undefined) setYrPen(s.yrPen);
+    if(s.houseOn!==undefined) setHouseOn(s.houseOn);
+    if(s.hAge!==undefined) setHAge(s.hAge);
+    if(s.hVal!==undefined) setHVal(s.hVal);
+    if(s.infRate!==undefined) setInfRate(s.infRate);
+    if(s.divPct!==undefined) setDivPct(s.divPct);
+    if(s.divRate!==undefined) setDivRate(s.divRate);
+    if(s.sellPortRt!==undefined) setSellPortRt(s.sellPortRt);
+    if(s.annSellPct!==undefined) setAnnSellPct(s.annSellPct);
+  }
+ 
+  // ── 시나리오 목록 불러오기
+  async function fetchList() {
+    try {
+      const res = await fetch(API_URL + "?action=list");
+      const json = await res.json();
+      if(json.ok) setScenarios(json.scenarios);
+    } catch(e) { console.error(e); }
+  }
+ 
+  // ── 저장
+  async function apiSave() {
+    setApiLoading(true); setApiMsg("");
+    try {
+      const res = await fetch(API_URL, {
+        method:"POST",
+        body: JSON.stringify({ action:"save", name:scenarioName, data:getState() }),
+      });
+      const json = await res.json();
+      if(json.ok) {
+        setApiMsg("✅ '" + scenarioName + "' 저장 완료!");
+        fetchList();
+      } else {
+        setApiMsg("❌ 저장 실패: " + json.error);
+      }
+    } catch(e) {
+      setApiMsg("❌ 네트워크 오류: " + e.message);
+    } finally { setApiLoading(false); setTimeout(()=>setApiMsg(""),4000); }
+  }
+ 
+  // ── 불러오기
+  async function apiLoad(name) {
+    setApiLoading(true); setApiMsg("");
+    try {
+      const res = await fetch(API_URL + "?action=load&name=" + encodeURIComponent(name));
+      const json = await res.json();
+      if(json.ok) {
+        applyState(json.data);
+        setScenarioName(json.name);
+        setApiMsg("✅ '" + json.name + "' 불러오기 완료! (" + json.timestamp + ")");
+        setShowPanel(false);
+      } else {
+        setApiMsg("❌ 불러오기 실패: " + json.error);
+      }
+    } catch(e) {
+      setApiMsg("❌ 네트워크 오류: " + e.message);
+    } finally { setApiLoading(false); setTimeout(()=>setApiMsg(""),5000); }
+  }
+ 
+  // ── 삭제
+  async function apiDelete(name) {
+    if(!confirm("'" + name + "' 시나리오를 삭제할까요?")) return;
+    setApiLoading(true);
+    try {
+      const res = await fetch(API_URL + "?action=delete&name=" + encodeURIComponent(name));
+      const json = await res.json();
+      if(json.ok) { setApiMsg("🗑 '" + name + "' 삭제 완료"); fetchList(); }
+      else setApiMsg("❌ 삭제 실패: " + json.error);
+    } catch(e) {
+      setApiMsg("❌ 네트워크 오류: " + e.message);
+    } finally { setApiLoading(false); setTimeout(()=>setApiMsg(""),3000); }
+  }
+ 
+  // 초기 로드 시 목록 가져오기
+  useEffect(()=>{ fetchList(); },[]);
+ 
+  function save(){
+    setSaving(true);
+    const st=document.createElement("style");
+    st.innerHTML="@media print{.np{display:none!important;}@page{margin:8mm;}}";
+    document.head.appendChild(st);
+    setTimeout(()=>{window.print();setTimeout(()=>{document.head.removeChild(st);setSaving(false);},500);},100);
+  }
+ 
+  const P={background:"#fff",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:12,padding:16,marginBottom:12};
+  const PT={fontSize:13,fontWeight:500,color:"#666",marginBottom:12,paddingBottom:8,borderBottom:"0.5px solid rgba(0,0,0,0.08)"};
+  const SEC={fontSize:11,fontWeight:500,color:"#999",letterSpacing:".04em",textTransform:"uppercase",margin:"12px 0 8px"};
+  const G2={display:"grid",gridTemplateColumns:"1fr 1fr",gap:14};
+  const G3={display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10};
+  const G4={display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8};
+  const G5={display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8};
+  const NB=(on)=>({width:72,fontSize:13,padding:"3px 7px",borderRadius:6,border:`0.5px solid ${on?"#378ADD":"rgba(0,0,0,0.2)"}`,background:on?"#E6F1FB":"#f5f5f5",textAlign:"right"});
+  const BC=usePct>100?"#D85A30":usePct>80?"#BA7517":"#378ADD";
+ 
+  return <div style={{fontFamily:"system-ui,sans-serif",fontSize:14,lineHeight:1.5,color:"#111",background:"#f0f0f0",minHeight:"100vh"}}>
+    {/* 상단바 */}
+    <div className="np" style={{position:"sticky",top:0,zIndex:100,background:"#fff",borderBottom:"0.5px solid rgba(0,0,0,0.1)",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+      <div style={{flex:1}}>
+        <div style={{fontSize:13,fontWeight:600}}>{title}</div>
+        <div style={{fontSize:11,color:"#999"}}>{subtitle}</div>
+      </div>
+      {/* 시나리오 이름 입력 */}
+      <input value={scenarioName} onChange={e=>setScenarioName(e.target.value)}
+        style={{fontSize:13,padding:"6px 10px",border:"0.5px solid rgba(0,0,0,0.2)",borderRadius:7,width:160,background:"#f9f9f9"}}
+        placeholder="시나리오 이름"/>
+      {/* 저장 버튼 */}
+      <button onClick={apiSave} disabled={apiLoading}
+        style={{padding:"7px 16px",borderRadius:7,border:"none",background:apiLoading?"#ccc":"#378ADD",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>
+        {apiLoading?"처리중...":"💾 저장"}
+      </button>
+      {/* 불러오기 버튼 */}
+      <button onClick={()=>{fetchList();setShowPanel(p=>!p);}}
+        style={{padding:"7px 16px",borderRadius:7,border:"0.5px solid rgba(0,0,0,0.2)",background:showPanel?"#f0f0f0":"#fff",color:"#111",fontSize:13,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>
+        📂 불러오기
+      </button>
+      {/* PDF 저장 */}
+      <button onClick={save} disabled={saving}
+        style={{padding:"7px 14px",borderRadius:7,border:"0.5px solid rgba(0,0,0,0.2)",background:"#fff",color:"#111",fontSize:13,cursor:"pointer",whiteSpace:"nowrap"}}>
+        {saving?"인쇄창...":"🖼 PDF"}
+      </button>
+    </div>
+ 
+    {/* API 메시지 */}
+    {apiMsg&&<div className="np" style={{textAlign:"center",fontSize:12,padding:"6px",
+      background:apiMsg.startsWith("✅")?"#EAF3DE":apiMsg.startsWith("🗑")?"#f5f5f5":"#FAECE7",
+      color:apiMsg.startsWith("✅")?"#3B6D11":apiMsg.startsWith("🗑")?"#666":"#993C1D"}}>
+      {apiMsg}
+    </div>}
+ 
+    {/* 시나리오 목록 패널 */}
+    {showPanel&&<div className="np" style={{position:"sticky",top:57,zIndex:99,background:"#fff",borderBottom:"0.5px solid rgba(0,0,0,0.1)",padding:"12px 16px",maxHeight:280,overflowY:"auto"}}>
+      <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:8}}>저장된 시나리오</div>
+      {scenarios.length===0
+        ? <div style={{fontSize:12,color:"#bbb",padding:"8px 0"}}>저장된 시나리오가 없습니다. 설정 후 💾 저장을 눌러보세요.</div>
+        : scenarios.map((s,i)=><div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+            padding:"8px 10px",borderRadius:7,marginBottom:4,background:"#f9f9f9",border:"0.5px solid rgba(0,0,0,0.08)"}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:500}}>{s.name}</div>
+              <div style={{fontSize:11,color:"#999"}}>{s.timestamp}</div>
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>apiLoad(s.name)} disabled={apiLoading}
+                style={{fontSize:12,padding:"4px 12px",borderRadius:6,border:"none",background:"#378ADD",color:"#fff",cursor:"pointer"}}>
+                불러오기
+              </button>
+              <button onClick={()=>apiDelete(s.name)} disabled={apiLoading}
+                style={{fontSize:12,padding:"4px 10px",borderRadius:6,border:"0.5px solid rgba(0,0,0,0.15)",background:"#fff",color:"#D85A30",cursor:"pointer"}}>
+                삭제
+              </button>
+            </div>
+          </div>)
+      }
+    </div>}
+ 
+    <div className="np" style={{textAlign:"center",fontSize:11,color:"#aaa",padding:"3px 0"}}>🖼 PDF 버튼 → 인쇄창 → "PDF로 저장" 선택</div>
+ 
+    <div style={{background:"#f0f0f0",padding:"20px 16px"}}>
+      {/* 헤더 */}
+      <div style={{marginBottom:16,padding:"20px 24px",background:"#111",borderRadius:16,color:"#fff"}}>
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16}}>
+          <div style={{flex:1}}>
+            {editT?<div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <input value={title} onChange={e=>setTitle(e.target.value)} style={{fontSize:20,fontWeight:700,background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:"4px 10px",color:"#fff",width:"100%"}}/>
+              <input value={subtitle} onChange={e=>setSubtitle(e.target.value)} style={{fontSize:13,background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.3)",borderRadius:6,padding:"3px 10px",color:"rgba(255,255,255,0.7)",width:"100%"}}/>
+              <button onClick={()=>setEditT(false)} style={{alignSelf:"flex-start",padding:"4px 12px",borderRadius:6,border:"none",background:"rgba(255,255,255,0.2)",color:"#fff",fontSize:12,cursor:"pointer"}}>완료</button>
+            </div>:<div onClick={()=>setEditT(true)} style={{cursor:"pointer"}}>
+              <div style={{fontSize:20,fontWeight:700,marginBottom:4}}>{title}</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.6)"}}>{subtitle}</div>
+              <div style={{fontSize:10,color:"rgba(255,255,255,0.35)",marginTop:6}}>클릭하여 제목 편집</div>
+            </div>}
+          </div>
+          <div style={{display:"flex",gap:20,flexShrink:0}}>
+            {[
+              {lbl:"총자산 목표",val:f억(grand),col:"#7fd87f",sub:targetYr+"년"},
+              {lbl:"전체 CAGR",val:p1(totAnnR),col:"#7bc8f0",sub:totalYrs+"년 기준"},
+              {lbl:"은퇴 후 월수입",val:fM(Math.round(totalRetireM만)),col:"#f0c97b",sub:"국민연금+배당+매도+주택연금"},
+            ].map((x,i)=><React.Fragment key={i}>
+              {i>0&&<div style={{width:"0.5px",background:"rgba(255,255,255,0.12)"}}/>}
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:10,color:"rgba(255,255,255,0.45)",marginBottom:4}}>{x.lbl}</div>
+                <div style={{fontSize:22,fontWeight:700,color:x.col}}>{x.val}</div>
+                <div style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{x.sub}</div>
+              </div>
+            </React.Fragment>)}
+          </div>
+        </div>
+        <div style={{marginTop:14,paddingTop:10,borderTop:"0.5px solid rgba(255,255,255,0.1)",display:"flex",justifyContent:"space-between",fontSize:11,color:"rgba(255,255,255,0.4)"}}>
+          <span>작성일: {new Date().toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric"})}</span>
+          <span>부동산 {f억(aptFinal)} · 금융자산 {f억(fin)} · 총수익률 {p1(totCumR)}</span>
+        </div>
+      </div>
+ 
+      {/* ── 목표 퇴직 시점 */}
+      <div style={P}><div style={PT}>목표 퇴직 시점</div>
+        <Slider label="퇴직 기준 연도" min={2035} max={2055} step={1} value={targetYr} onChange={v=>{setTargetYr(v);setSavEndOffset(0);}}
+          display={`${targetYr}년 (만 ${targetYr-1986}세, 현재로부터 ${targetYr-NOW}년 후)`}/>
+        {/* 연동 수치 요약 */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginTop:10}}>
+          {[
+            {l:"퇴직 연도",v:`${targetYr}년`,s:`만 ${targetYr-1986}세`,c:"#378ADD"},
+            {l:"저축 종료",v:`${savEnd}년`,s:`납입 ${savYrs}년${savEndOffset!==0?` (퇴직 ${savEndOffset>0?"+":""}{savEndOffset}년)`:""}`  ,c:savEndOffset!==0?"#BA7517":"#378ADD"},
+            {l:"은퇴 후 운용",v:`${extYrs}년`,s:`${savEnd}→${targetYr}년`,c:extYrs>0?"#639922":"#888"},
+            {l:"총 적립 기간",v:`${totalYrs}년`,s:`${NOW}→${targetYr}년`,c:"#534AB7"},
+          ].map((x,i)=><div key={i} style={{background:x.c+"15",borderRadius:8,padding:"8px 12px",borderLeft:`3px solid ${x.c}`}}>
+            <div style={{fontSize:11,color:x.c,marginBottom:2}}>{x.l}</div>
+            <div style={{fontSize:16,fontWeight:700,color:x.c}}>{x.v}</div>
+            <div style={{fontSize:10,color:"#999",marginTop:1}}>{x.s}</div>
+          </div>)}
+        </div>
+        {/* 저축 종료 오프셋 조정 */}
+        <div style={{marginTop:12,padding:"10px 12px",background:"#f5f5f5",borderRadius:8,border:"0.5px solid rgba(0,0,0,0.08)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+            <span style={{fontSize:12,color:"#666"}}>저축 종료 시점 조정</span>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:12,color:"#888"}}>퇴직 기준</span>
+              <span style={{fontSize:13,fontWeight:700,color:savEndOffset===0?"#378ADD":"#BA7517"}}>
+                {savEndOffset===0?"연동됨":savEndOffset>0?`+${savEndOffset}년`:savEndOffset+"년"}
+              </span>
+              {savEndOffset!==0&&<button onClick={()=>setSavEndOffset(0)}
+                style={{fontSize:11,padding:"2px 8px",borderRadius:4,border:"0.5px solid rgba(0,0,0,0.2)",background:"#fff",cursor:"pointer",color:"#666"}}>
+                초기화
+              </button>}
+            </div>
+          </div>
+          <input type="range" min={-5} max={5} step={1} value={savEndOffset} onChange={e=>setSavEndOffset(Number(e.target.value))}
+            style={{width:"100%",accentColor:savEndOffset===0?"#378ADD":"#BA7517"}}/>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#bbb",marginTop:2}}>
+            <span>-5년 (조기 종료)</span>
+            <span style={{color:"#666"}}>{savEnd}년 저축 종료 → {targetYr}년 퇴직</span>
+            <span>+5년 (연장)</span>
+          </div>
+        </div>
+      </div>
+ 
+      {/* ── 부동산 */}
+      <div style={P}><div style={PT}>부동산 매도 시나리오</div>
+        <div style={{fontSize:12,padding:"8px 11px",borderRadius:8,marginBottom:6,background:hwFirst?"#EAF3DE":"#FAECE7",color:hwFirst?"#3B6D11":"#993C1D",borderLeft:`3px solid ${hwFirst?"#639922":"#D85A30"}`}}>
+          {hwFirst?`✅ 전략 B — 화랑대(${hwYr}) 먼저 매도 → 광명(${gmYr}) 1주택 비과세 (비조정지역·보유 ${gmYr-2024}년)`:`⚠️ 광명 먼저 매도 시 2주택자 → 일반과세. 화랑대를 ${gmYr}년 이전 먼저 매도하면 광명 비과세`}
+        </div>
+        <div style={{fontSize:11,padding:"6px 10px",borderRadius:6,marginBottom:10,background:"#fffbf0",border:"0.5px solid #e8d48a",color:"#7a6200"}}>
+          화랑대: 2주택자 → 일반과세 | 광명: 비조정지역·보유 2년↑ → 1주택 비과세{gmSell>12?` (12억 초과 ${f억(gmSell-12)} 과세)`:""}
+        </div>
+        <div style={G2}>
+          <div>
+            <div style={SEC}>화랑대 이편한세상 (중랑구 25평 · 매수 8.25억)</div>
+            <Slider label="매도 연도" min={2026} max={2033} step={1} value={hwYr} onChange={setHwYr} display={`${hwYr}년`}/>
+            <Slider label="연 상승률" min={0} max={20} step={0.5} value={hwRt} onChange={setHwRt} display={`${hwRt}%`}/>
+            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:12,color:"#666",minWidth:80}}>목표 매도가</span>
+              <input type="number" value={hwD} onChange={e=>setHwD(e.target.value)} placeholder="자동" step="0.1" style={NB(!!hwD)}/>
+              <span style={{fontSize:11,color:"#999"}}>억</span>
+            </div>
+            <Slider label="담보대출 잔액" min={0} max={7} step={0.1} value={hwLoan} onChange={setHwLoan} display={f억(hwLoan)}/>
+          </div>
+          <div>
+            <div style={SEC}>광명 푸르지오 센트베르 (25평 · 매수 8.1억)</div>
+            <Slider label="매도 연도" min={2026} max={2034} step={1} value={gmYr} onChange={setGmYr} display={`${gmYr}년`}/>
+            <Slider label="연 상승률" min={0} max={20} step={0.5} value={gmRt} onChange={setGmRt} display={`${gmRt}%`}/>
+            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:12,color:"#666",minWidth:80}}>목표 매도가</span>
+              <input type="number" value={gmD} onChange={e=>setGmD(e.target.value)} placeholder="자동" step="0.1" style={NB(!!gmD)}/>
+              <span style={{fontSize:11,color:"#999"}}>억</span>
+            </div>
+            <Slider label="전세보증금 반환" min={0} max={7} step={0.1} value={gmJ} onChange={setGmJ} display={f억(gmJ)}/>
+          </div>
+        </div>
+        <div style={{fontSize:11,background:"#fffbf0",border:"0.5px solid #e8d48a",borderRadius:8,padding:"8px 12px",marginTop:10,color:"#7a6200",lineHeight:1.8}}>
+          <strong>양도세 계산 근거</strong> (누진세율+지방소득세 10%, 기본공제 250만원)<br/>
+          • 화랑대: 차익 {f억(Math.max(0,hwSell-8.25))} → 세금 <strong>{f억2(hwTax)}</strong> (2주택자 일반과세)<br/>
+          • 광명: 차익 {f억(Math.max(0,gmSell-8.1))} → 세금 <strong>{f억2(gmTax)}</strong>{hwFirst?(gmSell<=12?" (1주택 비과세 ✓)":" (12억 초과분 과세)"):" (2주택자 일반과세)"}<br/>
+          ※ 장기보유특별공제 미반영 — 실제 세금은 더 낮을 수 있음
+        </div>
+        <hr style={{border:"none",borderTop:"0.5px solid rgba(0,0,0,0.08)",margin:"14px 0"}}/>
+        <div style={SEC}>신규 매수 아파트</div>
+        <div style={G2}>
+          <div>
+            <Slider label="매수 연도" min={2027} max={2035} step={1} value={newYr} onChange={setNewYr} display={`${newYr}년`}/>
+            <Slider label="슬라이더 매수가" min={10} max={25} step={0.5} value={newP} onChange={setNewP} display={f억(newP)}/>
+            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
+              <span style={{fontSize:12,color:"#666",minWidth:80}}>목표 매수가</span>
+              <input type="number" value={newD} onChange={e=>setNewD(e.target.value)} placeholder="자동" step="0.1" style={NB(!!newD)}/>
+              <span style={{fontSize:11,color:"#999"}}>억</span>
+            </div>
+          </div>
+          <div>
+            <Slider label="신규 대출 (주담대 기준)" min={0} max={8} step={0.5} value={newL} onChange={v=>{setNewL(v);setMortLoanAdj(0);}} display={f억(newL)}/>
+            <Slider label="연 상승률" min={0} max={20} step={0.5} value={newRt} onChange={setNewRt} display={`${newRt}%`}/>
+          </div>
+        </div>
+        <div style={G4}>
+          <MC label="화랑대 매도가" value={f억(hwSell)} sub={`세금 ${f억2(hwTax)}`} color="blue"/>
+          <MC label="광명 매도가" value={f억(gmSell)} sub={hwFirst?(gmSell<=12?"비과세 ✓":`세금 ${f억2(gmTax)}`):(`세금 ${f억2(gmTax)}`)} color="blue"/>
+          <MC label="매도 후 현금풀" value={f억2(pool)} sub="세금·대출·전세 차감" color="amber"/>
+          <MC label="목표연도 부동산" value={f억(aptFinal)} sub={`${targetYr}년, 대출차감`} color="green"/>
+        </div>
+      </div>
+ 
+      {/* ── 현금흐름 */}
+      <div style={P}><div style={PT}>현금흐름 및 금융자산</div>
+        <div style={G2}>
+          <div>
+            <div style={SEC}>월 수입 (세후)</div>
+            <Slider label="월급" min={400} max={1500} step={10} value={salary} onChange={setSalary} display={`${fM(salary)}/월`}/>
+            <Slider label="상여+성과급 (연간)" min={0} max={8000} step={100} value={bonusY} onChange={setBonusY} display={`${fM(bonusY)}/년 (${fM(Math.round(bonusY/12))}/월)`}/>
+          </div>
+          <div>
+            <div style={SEC}>월 지출 (고정)</div>
+            {/* ── 주담대 상환 — 원리금균등상환 자동계산 */}
+            <div style={{background:"#f5f5f5",borderRadius:8,padding:"10px 12px",marginBottom:8,border:"0.5px solid rgba(0,0,0,0.08)"}}>
+              <div style={{fontSize:11,fontWeight:500,color:"#666",marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span>주담대 원리금 상환</span>
+                <span style={{fontSize:13,fontWeight:700,color:"#D85A30"}}>{fM(Math.round(mortMonthly))}/월</span>
+              </div>
+              {/* 대출금액 조정 */}
+              <div style={{marginBottom:6}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                  <span style={{fontSize:11,color:"#888"}}>대출금액 (신규대출 기준 조정)</span>
+                  <span style={{fontSize:12,fontWeight:600,color:"#378ADD"}}>{f억(mortLoan)}</span>
+                </div>
+                <input type="range" min={-2} max={2} step={0.1} value={mortLoanAdj}
+                  onChange={e=>setMortLoanAdj(Number(e.target.value))}
+                  style={{width:"100%",accentColor:"#378ADD"}}/>
+                <div style={{fontSize:10,color:"#bbb",marginTop:2}}>신규대출 {f억(newL)} 기준 ± 조정 ({mortLoanAdj>=0?"+":""}{f억(mortLoanAdj)})</div>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div>
+                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>이자율 (%/년)</div>
+                  <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                    <input type="range" min={1} max={8} step={0.1} value={mortRate} onChange={e=>setMortRate(Number(e.target.value))} style={{flex:1,accentColor:"#D85A30"}}/>
+                    <span style={{fontSize:12,fontWeight:600,minWidth:36,textAlign:"right"}}>{mortRate}%</span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:"#888",marginBottom:3}}>상환기간 (년)</div>
+                  <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                    <input type="range" min={10} max={40} step={1} value={mortYears} onChange={e=>setMortYears(Number(e.target.value))} style={{flex:1,accentColor:"#D85A30"}}/>
+                    <span style={{fontSize:12,fontWeight:600,minWidth:36,textAlign:"right"}}>{mortYears}년</span>
+                  </div>
+                </div>
+              </div>
+              <div style={{marginTop:6,fontSize:11,color:"#aaa",display:"flex",gap:16}}>
+                <span>원리금합계: {fM(Math.round(mortMonthly*mortYears*12))}</span>
+                <span>이자합계: {fM(Math.round(mortMonthly*mortYears*12-mortLoan*10000))}</span>
+              </div>
+            </div>
+            <Slider label="생활비+보험" min={100} max={600} step={10} value={living} onChange={setLiving} display={`${fM(living)}/월`}/>
+            <Slider label="교육비" min={0} max={300} step={5} value={edu} onChange={setEdu} display={`${fM(edu)}/월`}/>
+          </div>
+        </div>
+        {/* 가용자산 */}
+        <div style={{margin:"12px 0 10px",padding:12,background:"#f5f5f5",borderRadius:8,border:"0.5px solid rgba(0,0,0,0.1)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
+            <div><div style={{fontSize:11,color:"#999",marginBottom:2}}>월 가용자산</div><div style={{fontSize:20,fontWeight:600}}>{fM(Math.round(availM))}/월</div></div>
+            <div style={{textAlign:"right"}}><div style={{fontSize:11,color:"#999",marginBottom:2}}>연간 가용자산</div><div style={{fontSize:16,fontWeight:600}}>{fM2억(availY)}/년</div></div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10,fontSize:12}}>
+            {[{l:"연간 수입",v:fM2억(incomeY),s:`월급 ${fM(salary*12)}+상여 ${fM(bonusY)}`},{l:"연간 지출",v:fM2억(expY),s:`주담대 ${fM(Math.round(mortMonthly))}+생활 ${fM(living)}+교육 ${fM(edu)}`},{l:"연간 가용",v:fM2억(availY),s:`${fM(Math.round(availM))}/월`,w:availY<0}]
+            .map((r,i)=><div key={i} style={{background:"#fff",borderRadius:6,padding:"6px 10px"}}>
+              <div style={{color:"#999",fontSize:11,marginBottom:2}}>{r.l}</div>
+              <div style={{fontWeight:600,color:r.w?"#D85A30":"inherit"}}>{r.v}</div>
+              <div style={{color:"#bbb",fontSize:11}}>{r.s}</div>
+            </div>)}
+          </div>
+          {/* 저축 배분율 바 */}
+          <div style={{fontSize:11,color:"#999",marginBottom:4}}>
+            저축 배분율 <strong style={{color:BC}}>{(Math.round(usePct*10)/10).toFixed(1)}%</strong>
+            &nbsp;·&nbsp; 연간 잔여 <span style={{color:remY<0?"#D85A30":"inherit",fontWeight:600}}>{fM2억(remY)}</span>
+          </div>
+          <div style={{height:8,background:"rgba(0,0,0,0.08)",borderRadius:5,overflow:"hidden",marginBottom:2}}>
+            <div style={{height:"100%",width:`${Math.min(usePct,100)}%`,background:BC,borderRadius:5,transition:"width .3s"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#bbb",marginBottom:10}}>
+            <span>저축 합계 {fM2억(allY)}/년</span><span>가용 한도 {fM2억(availY)}/년</span>
+          </div>
+ 
+          {/* 월 여윳돈 게이지바 */}
+          {(()=>{
+            const remM = Math.round(remY/12); // 만원/월
+            const remAbs = Math.abs(remM);
+            const maxRemForBar = Math.max(Math.abs(Math.round(availM)), 1);
+            const barW = Math.min(remAbs/maxRemForBar*100, 100);
+            const isNeg = remM < 0;
+            const barC = isNeg ? "#C0392B" : remM < 50 ? "#8E44AD" : "#1A7A4A";
+            return <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                <span style={{fontSize:11,color:"#666",fontWeight:500}}>월 여윳돈 (저축 후 잔여)</span>
+                <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+                  <span style={{fontSize:16,fontWeight:700,color:barC}}>{isNeg?"-":""}{fM(remAbs)}</span>
+                  <span style={{fontSize:10,color:"#bbb"}}>/월</span>
+                </div>
+              </div>
+              <div style={{height:12,background:"rgba(0,0,0,0.07)",borderRadius:6,overflow:"hidden",position:"relative"}}>
+                <div style={{height:"100%",width:`${barW}%`,background:barC,borderRadius:6,transition:"width .3s",
+                  background:isNeg?`repeating-linear-gradient(45deg,${barC},${barC} 6px,rgba(255,255,255,0.2) 6px,rgba(255,255,255,0.2) 12px)`:barC}}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginTop:3}}>
+                <span style={{color:barC,fontWeight:500}}>
+                  {isNeg?"⚠️ 저축이 가용자산 초과 — 지출 조정 필요":"✅ 여유 있음"}
+                </span>
+                <span style={{color:"#bbb"}}>연 {isNeg?"-":""}{fM2억(Math.abs(remY))}</span>
+              </div>
+            </div>;
+          })()}
+        </div>
+        {/* 채널 */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div style={SEC}>저축 채널</div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <div style={{fontSize:11,background:savEndOffset===0?"#E6F1FB":"#FAEEDA",color:savEndOffset===0?"#185FA5":"#854F0B",
+                         padding:"3px 9px",borderRadius:99,border:`0.5px solid ${savEndOffset===0?"#378ADD":"#BA7517"}`}}>
+              {savEndOffset===0?"🔗 퇴직 연동":"⚙️ 별도 설정"}
+            </div>
+            <span style={{fontSize:12,fontWeight:600,color:"#111"}}>{savEnd}년까지 ({savYrs}년)</span>
+          </div>
+        </div>
+        {CHANNELS.map(ch=><div key={ch.id} style={{padding:"8px 0",borderBottom:"0.5px solid rgba(0,0,0,0.08)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+            <div style={{width:8,height:8,borderRadius:"50%",background:ch.color,flexShrink:0}}/>
+            <span style={{fontSize:12,fontWeight:500,flex:1}}>{ch.label}</span>
+            <span style={{fontSize:11,color:"#999"}}>연 {fM(chM[ch.id]*12)}</span>
+            <span style={{fontSize:13,fontWeight:600}}>{f억(ca[ch.id]||0)}</span>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 52px 1fr 44px",gap:6,alignItems:"center"}}>
+            <input type="range" min={0} max={ch.maxM} step={5} value={chM[ch.id]} onChange={e=>setChM(p=>({...p,[ch.id]:Number(e.target.value)}))} style={{accentColor:ch.color}}/>
+            <span style={{textAlign:"right",fontSize:12,fontWeight:500}}>{chM[ch.id]}만/월</span>
+            <input type="range" min={0} max={20} step={0.5} value={chRt[ch.id]} onChange={e=>setChRt(p=>({...p,[ch.id]:Number(e.target.value)}))} style={{accentColor:ch.color}}/>
+            <span style={{textAlign:"right",fontSize:12,fontWeight:500}}>{chRt[ch.id]}%/년</span>
+          </div>
+        </div>)}
+        {/* 개별 주식 */}
+        <div style={{marginTop:10,paddingTop:10,borderTop:"0.5px solid rgba(0,0,0,0.08)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#D85A30"}}/>
+              <span style={{fontSize:11,fontWeight:500,color:"#999",textTransform:"uppercase",letterSpacing:".04em"}}>개별 주식</span>
+            </div>
+            {stocks.length>0&&<span style={{fontSize:13,fontWeight:600}}>{f억(ca["stk"]||0)}</span>}
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginBottom:8}}>
+            <input type="text" value={sN} onChange={e=>setSN(e.target.value)} placeholder="종목명" style={{flex:1,minWidth:80,fontSize:12,padding:"4px 8px",border:"0.5px solid rgba(0,0,0,0.18)",borderRadius:6,background:"#f5f5f5"}}/>
+            <input type="number" value={sM} onChange={e=>setSM(e.target.value)} placeholder="월납입" style={{width:68,fontSize:13,padding:"3px 7px",border:"0.5px solid rgba(0,0,0,0.18)",borderRadius:6,background:"#f5f5f5",textAlign:"right"}}/>
+            <span style={{fontSize:11,color:"#999"}}>만</span>
+            <input type="number" value={sR} onChange={e=>setSR(e.target.value)} placeholder="수익률" style={{width:60,fontSize:13,padding:"3px 7px",border:"0.5px solid rgba(0,0,0,0.18)",borderRadius:6,background:"#f5f5f5",textAlign:"right"}}/>
+            <span style={{fontSize:11,color:"#999"}}>%/년</span>
+            <button onClick={addStk} style={{fontSize:12,padding:"4px 10px",borderRadius:6,border:"0.5px solid rgba(0,0,0,0.18)",background:"#f5f5f5",cursor:"pointer"}}>+ 추가</button>
+          </div>
+          {stocks.length===0&&<div style={{fontSize:12,color:"#bbb"}}>종목 추가 시 복리 누적 자동 계산</div>}
+          {stocks.map(s=>{const ae=compSav(s.m*10000,s.rt,savYrs);const acc=(ae*Math.pow(1+s.rt/100,extYrs))/1e8;
+            return <div key={s.id} style={{display:"grid",gridTemplateColumns:"14px 80px 1fr 44px 1fr 40px 56px 16px",gap:6,alignItems:"center",padding:"5px 0",borderBottom:"0.5px solid rgba(0,0,0,0.06)",fontSize:12}}>
+              <div style={{width:7,height:7,borderRadius:"50%",background:"#D85A30",margin:"auto"}}/>
+              <span style={{fontWeight:500}}>{s.name}</span>
+              <input type="range" min={0} max={300} step={5} value={s.m} onChange={e=>updStk(s.id,"m",Number(e.target.value))} style={{accentColor:"#D85A30"}}/>
+              <span style={{fontSize:11,textAlign:"right"}}>{s.m}만</span>
+              <input type="range" min={0} max={30} step={0.5} value={s.rt} onChange={e=>updStk(s.id,"rt",Number(e.target.value))} style={{accentColor:"#D85A30"}}/>
+              <span style={{fontSize:11,textAlign:"right"}}>{s.rt}%</span>
+              <span style={{fontSize:12,fontWeight:500,textAlign:"right"}}>{f억(acc)}</span>
+              <span onClick={()=>delStk(s.id)} style={{color:"#bbb",cursor:"pointer",textAlign:"center"}}>×</span>
+            </div>;})}
+        </div>
+        {/* 퇴직연금 */}
+        <div style={{marginTop:10,paddingTop:10,borderTop:"0.5px solid rgba(0,0,0,0.08)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#C06030"}}/>
+              <span style={{fontSize:11,fontWeight:500,color:"#999",textTransform:"uppercase",letterSpacing:".04em"}}>퇴직연금 (DC/DB)</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              {dcOn&&<span style={{fontSize:13,fontWeight:600}}>{f억(ca["dc"]||0)}</span>}
+              <Toggle on={dcOn} onChange={setDcOn} label={dcOn?"적용 중":"미적용"}/>
+            </div>
+          </div>
+          {dcOn&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+            <div>
+              <Slider label="연간 납입액 (회사+본인)" min={0} max={3000} step={100} value={dcY} onChange={setDcY} display={`${fM(dcY)}/년 (${fM(Math.round(dcY/12))}/월)`}/>
+              <Slider label="운용 수익률" min={0} max={15} step={0.5} value={dcRt} onChange={setDcRt} display={`${dcRt}%/년`}/>
+            </div>
+            <div>
+              <div style={{marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                  <span style={{fontSize:12,color:"#666"}}>현재 적립금</span>
+                  <span style={{fontSize:12,fontWeight:600}}>{fM(dcEx)}</span>
+                </div>
+                <input type="range" min={0} max={10000} step={100} value={dcEx} onChange={e=>setDcEx(Number(e.target.value))} style={{width:"100%",accentColor:"#C06030"}}/>
+              </div>
+              <div style={{background:"#FFF5EE",borderRadius:6,padding:"8px 10px",fontSize:11,color:"#8B4513",border:"0.5px solid #E8C4A0"}}>
+                목표연도 누적: <strong>{f억(ca["dc"]||0)}</strong> / 납입원금 {fM(dcY*savYrs)}+적립금 {fM(dcEx)}
+              </div>
+            </div>
+          </div>}
+          {!dcOn&&<div style={{fontSize:12,color:"#bbb",fontStyle:"italic"}}>퇴직연금 미포함 — 토글로 활성화</div>}
+        </div>
+        <div style={{...G5,marginTop:14}}>
+          <MC label="월 총 저축" value={`${fM(chMtot)}/월`} sub={`연 ${fM2억(chY)}`}/>
+          <MC label="납입 원금 합계" value={f억(prin억)} sub={`${savYrs}년 납입`} color="blue"/>
+          <MC label="목표연도 금융자산" value={f억(fin)} sub={`${targetYr}년 기준`} color="green"/>
+          <MC label="금융자산 누적수익률" value={p1(finCumR)} sub={`원금 ${f억(prin억)} 대비`} color="amber"/>
+          <MC label="금융자산 CAGR" value={p1(finAnnR)} sub={`${totalYrs}년 기준`} color="teal"/>
+        </div>
+      </div>
+ 
+      {/* ── 은퇴 소득 계산기 */}
+      <div style={P}><div style={PT}>은퇴 소득 계산기</div>
+ 
+        {/* 물가상승률 */}
+        <div style={{marginBottom:12}}>
+          <Slider label="물가상승률 (현재가치 환산 기준)" min={0} max={5} step={0.1} value={infRate} onChange={setInfRate}
+            display={`${infRate}% (${totalYrs}년 후 현재가치 = 미래가치 ÷ ${pvFactor.toFixed(2)})`} color="#9B59B6"/>
+        </div>
+ 
+        <div style={G2}>
+          <div>
+            <div style={SEC}>국민연금</div>
+            <Slider label="철민 수급 개시 나이" min={62} max={70} step={1} value={cmAge} onChange={setCmAge} display={`만 ${cmAge}세 (${1986+cmAge}년)`}/>
+            <Slider label="철민 월 수령" min={50} max={300} step={1} value={cmPen} onChange={setCmPen} display={`${fM(cmPen)}/월`}/>
+            <Slider label="유리 수급 개시 나이" min={62} max={70} step={1} value={yrAge} onChange={setYrAge} display={`만 ${yrAge}세 (${1989+yrAge}년)`}/>
+            <Slider label="유리 월 수령" min={30} max={200} step={1} value={yrPen} onChange={setYrPen} display={`${fM(yrPen)}/월`}/>
+          </div>
+          <div>
+            <div style={SEC}>주택연금</div>
+            <div style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <span style={{fontSize:12,color:"#666"}}>주택연금</span>
+                <Toggle on={houseOn} onChange={setHouseOn} label={houseOn?"적용 중":"미적용"}/>
+              </div>
+              {houseOn&&<>
+                <Slider label="가입 나이" min={60} max={75} step={1} value={hAge} onChange={setHAge} display={`만 ${hAge}세 (${1986+hAge}년)`}/>
+                <Slider label="주택 예상 가치" min={5} max={30} step={0.5} value={hVal} onChange={setHVal} display={f억(hVal)}/>
+              </>}
+              {!houseOn&&<div style={{fontSize:12,color:"#bbb",fontStyle:"italic"}}>미가입 — 토글로 활성화</div>}
+            </div>
+          </div>
+        </div>
+ 
+        {/* ── 금융자산 인출 전략 */}
+        <div style={{background:"#F8F6FF",borderRadius:10,padding:14,marginTop:12,border:"0.5px solid #C5BAF5"}}>
+          <div style={{fontSize:12,fontWeight:600,color:"#3C3489",marginBottom:12,display:"flex",alignItems:"center",gap:6}}>
+            <span style={{fontSize:16}}>💰</span> 금융자산 인출 전략 설계
+          </div>
+ 
+          {/* 포트 비중 */}
+          <div style={{marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+              <span style={{fontSize:12,color:"#534AB7",fontWeight:500}}>배당 포트 비중</span>
+              <span style={{fontSize:13,fontWeight:700,color:"#3C3489"}}>{divPct}% / 매도 포트 {100-divPct}%</span>
+            </div>
+            <input type="range" min={0} max={100} step={5} value={divPct} onChange={e=>setDivPct(Number(e.target.value))} style={{width:"100%",accentColor:"#534AB7"}}/>
+            {/* 비중 시각화 바 */}
+            <div style={{display:"flex",height:8,borderRadius:4,overflow:"hidden",marginTop:6}}>
+              <div style={{width:`${divPct}%`,background:"#534AB7",transition:"width .3s"}}/>
+              <div style={{width:`${100-divPct}%`,background:"#0F6E56",transition:"width .3s"}}/>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#888",marginTop:2}}>
+              <span>■ 배당 포트 {f억(divPortAmt)}</span>
+              <span>■ 매도 포트 {f억(sellPortAmt)}</span>
+            </div>
+          </div>
+ 
+          <div style={G2}>
+            {/* 배당 포트 */}
+            <div style={{background:"#EEEDFE",borderRadius:8,padding:12,border:"0.5px solid #AFA9EC"}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#534AB7",marginBottom:10}}>📈 배당 포트 ({divPct}%) — {f억(divPortAmt)}</div>
+              <Slider label="배당 수익률 (%/년)" min={0} max={10} step={0.1} value={divRate} onChange={setDivRate} display={`${divRate}%`} color="#534AB7"/>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
+                <div style={{background:"#fff",borderRadius:6,padding:"8px 10px"}}>
+                  <div style={{fontSize:10,color:"#534AB7",marginBottom:2}}>연 배당소득</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#3C3489"}}>{fM(Math.round(divIncomeY억*10000))}</div>
+                  <div style={{fontSize:10,color:"#9B8FE0",marginTop:2}}>현재가치 {fM(Math.round(divIncomeY_pv))}</div>
+                </div>
+                <div style={{background:"#fff",borderRadius:6,padding:"8px 10px"}}>
+                  <div style={{fontSize:10,color:"#534AB7",marginBottom:2}}>월 배당소득</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#3C3489"}}>{fM(Math.round(divIncomeM만))}</div>
+                  <div style={{fontSize:10,color:"#9B8FE0",marginTop:2}}>현재가치 {fM(Math.round(divIncomeM_pv))}</div>
+                </div>
+              </div>
+            </div>
+ 
+            {/* 매도 포트 */}
+            <div style={{background:"#E1F5EE",borderRadius:8,padding:12,border:"0.5px solid #5DCAA5"}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#0F6E56",marginBottom:10}}>💹 매도 포트 ({100-divPct}%) — {f억(sellPortAmt)}</div>
+              <Slider label="연간 매도 비율 (%)" min={0} max={20} step={0.5} value={annSellPct} onChange={setAnnSellPct} display={`${annSellPct}%`} color="#0F6E56"/>
+              <Slider label="매도 포트 운용 수익률 (%/년)" min={0} max={20} step={0.5} value={sellPortRt} onChange={setSellPortRt} display={`${sellPortRt}%`} color="#0F6E56"/>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
+                <div style={{background:"#fff",borderRadius:6,padding:"8px 10px"}}>
+                  <div style={{fontSize:10,color:"#0F6E56",marginBottom:2}}>연 매도소득</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#085041"}}>{fM(Math.round(sellIncomeY억*10000))}</div>
+                  <div style={{fontSize:10,color:"#5DCAA5",marginTop:2}}>현재가치 {fM(Math.round(sellIncomeY_pv))}</div>
+                </div>
+                <div style={{background:"#fff",borderRadius:6,padding:"8px 10px"}}>
+                  <div style={{fontSize:10,color:"#0F6E56",marginBottom:2}}>월 매도소득</div>
+                  <div style={{fontSize:15,fontWeight:700,color:"#085041"}}>{fM(Math.round(sellIncomeM만))}</div>
+                  <div style={{fontSize:10,color:"#5DCAA5",marginTop:2}}>현재가치 {fM(Math.round(sellIncomeM_pv))}</div>
+                </div>
+              </div>
+ 
+              {/* 순수익 (비상자금) */}
+              {(()=>{
+                const netRt = sellPortRt - annSellPct; // 순 추가 수익률
+                const netY억 = sellPortAmt * netRt/100; // 연 순수익 (억)
+                const netM만 = netY억*10000/12;          // 월 순수익 (만원)
+                const netColor = netRt >= 0 ? "#085041" : "#993C1D";
+                const netBg    = netRt >= 0 ? "#E1F5EE" : "#FAECE7";
+                const netBorder= netRt >= 0 ? "#5DCAA5" : "#F0997B";
+                return <div style={{marginTop:8,padding:"10px 12px",background:netBg,borderRadius:6,border:`0.5px solid ${netBorder}`}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                    <div>
+                      <div style={{fontSize:10,color:netColor,marginBottom:1,fontWeight:600}}>
+                        {netRt >= 0 ? "💰 순 추가수익 (비상자금)" : "⚠️ 원금 감소 중"}
+                      </div>
+                      <div style={{fontSize:11,color:"#888"}}>
+                        수익률 {sellPortRt}% − 매도율 {annSellPct}% = <strong style={{color:netColor}}>{netRt>=0?"+":""}{(Math.round(netRt*10)/10).toFixed(1)}%</strong>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    <div style={{background:"rgba(255,255,255,0.7)",borderRadius:5,padding:"6px 8px"}}>
+                      <div style={{fontSize:10,color:netColor,marginBottom:1}}>연간 순수익</div>
+                      <div style={{fontSize:14,fontWeight:700,color:netColor}}>{netRt>=0?"+":""}{fM(Math.round(Math.abs(netY억*10000)))}</div>
+                      <div style={{fontSize:10,color:"#aaa"}}>현재가치 {fM(Math.round(Math.abs(netY억*10000)/pvFactor))}</div>
+                    </div>
+                    <div style={{background:"rgba(255,255,255,0.7)",borderRadius:5,padding:"6px 8px"}}>
+                      <div style={{fontSize:10,color:netColor,marginBottom:1}}>월간 순수익</div>
+                      <div style={{fontSize:14,fontWeight:700,color:netColor}}>{netRt>=0?"+":""}{fM(Math.round(Math.abs(netM만)))}</div>
+                      <div style={{fontSize:10,color:"#aaa"}}>현재가치 {fM(Math.round(Math.abs(netM만)/pvFactor))}</div>
+                    </div>
+                  </div>
+                  {netRt < 0 && <div style={{fontSize:10,color:"#993C1D",marginTop:6}}>원금 보전을 위해 수익률을 최소 {(Math.round(annSellPct*10)/10).toFixed(1)}% 이상으로 설정하세요</div>}
+                </div>;
+              })()}
+            </div>
+          </div>
+        </div>
+ 
+        {/* 국민연금 + 주택연금 카드 */}
+        <div style={{...G3,marginTop:12}}>
+          <MC label="국민연금 합산 (월)" value={`${fM(penSum)}/월`}
+            sub={`철민 ${1986+cmAge}년 / 유리 ${1989+yrAge}년`}
+            sub2={`현재가치 ${fM(Math.round(penPv만))}/월`}
+            color="purple"/>
+          <MC label={houseOn?"주택연금 (월)":"주택연금 (미가입)"}
+            value={houseOn?f원(houseMon원):"—"}
+            sub={houseOn?`가입 나이 만 ${hAge}세`:"토글로 활성화"}
+            sub2={houseOn?`현재가치 ${fM(Math.round(housePv만))}/월`:""}
+            color={houseOn?"blue":undefined}/>
+          <div style={{background:"#EAF3DE",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:"#3B6D11",marginBottom:3}}>금융자산 총 월소득</div>
+            <div style={{fontSize:16,fontWeight:700,color:"#27500A"}}>{fM(Math.round(divIncomeM만+sellIncomeM만))}/월</div>
+            <div style={{fontSize:11,color:"#3B6D11",marginTop:2}}>배당 {fM(Math.round(divIncomeM만))} + 매도 {fM(Math.round(sellIncomeM만))}</div>
+            <div style={{fontSize:10,color:"#639922",marginTop:1}}>현재가치 {fM(Math.round(divIncomeM_pv+sellIncomeM_pv))}/월</div>
+          </div>
+        </div>
+ 
+        {/* 은퇴 후 총 월수입 */}
+        <div style={{...G2,marginTop:10}}>
+          <div style={{background:"#EAF3DE",borderRadius:8,padding:"12px 14px"}}>
+            <div style={{fontSize:11,color:"#3B6D11",marginBottom:4}}>은퇴 후 월 총수입 (국민연금 포함)</div>
+            <div style={{fontSize:20,fontWeight:700,color:"#27500A"}}>{fM(Math.round(totalRetireM만))}/월</div>
+            <div style={{fontSize:11,color:"#3B6D11",marginTop:4}}>국민연금 {fM(penSum)} + 배당 {fM(Math.round(divIncomeM만))} + 매도 {fM(Math.round(sellIncomeM만))} + 주택연금 {fM(Math.round(houseMon원/10000))}</div>
+            <div style={{fontSize:11,color:"#639922",marginTop:2}}>현재가치 기준: {fM(Math.round(totalRetireM_pv))}/월</div>
+          </div>
+          <div style={{background:"#FAECE7",borderRadius:8,padding:"12px 14px"}}>
+            <div style={{fontSize:11,color:"#993C1D",marginBottom:4}}>은퇴 후 월 총수입 (국민연금 제외)</div>
+            <div style={{fontSize:20,fontWeight:700,color:"#712B13"}}>{fM(Math.round(divIncomeM만+sellIncomeM만+houseMon원/10000))}/월</div>
+            <div style={{fontSize:11,color:"#993C1D",marginTop:4}}>배당 + 매도 + 주택연금 (연금 개시 전 공백기)</div>
+            <div style={{fontSize:11,color:"#D85A30",marginTop:2}}>현재가치 기준: {fM(Math.round(divIncomeM_pv+sellIncomeM_pv+housePv만))}/월</div>
+          </div>
+        </div>
+      </div>
+ 
+      {/* ── 총자산 */}
+      <div style={{...P,borderColor:"rgba(0,0,0,0.15)"}}><div style={PT}>은퇴 목표 — 총자산 및 수익률 종합</div>
+        <div style={G3}>
+          <MC label="부동산 (대출차감)" value={f억(aptFinal)} sub={`CAGR ${p1(aptAnnR)} · 누적 ${p1(aptCumR)}`} color="green"/>
+          <MC label="금융자산 합계" value={f억(fin)} sub={`CAGR ${p1(finAnnR)} · 누적 ${p1(finCumR)}`} color="blue"/>
+          <div style={{background:"#EAF3DE",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:"#3B6D11",marginBottom:3}}>총자산 합계</div>
+            <div style={{fontSize:20,fontWeight:700,color:"#27500A"}}>{f억(grand)}</div>
+            <div style={{fontSize:11,color:"#3B6D11",marginTop:2}}>{targetYr}년 만 {targetYr-1986}세 · CAGR {p1(totAnnR)}</div>
+          </div>
+        </div>
+        <div style={{marginTop:14}}>
+          <RetBox title="부동산" items={[
+            {label:"투자 원가",value:f억(aptCost),sub:"화랑대+광명"},
+            {label:"목표연도 가치",value:f억(aptFinal),sub:`${targetYr}년 (대출차감)`},
+            {label:"누적 수익률",value:p1(aptCumR),color:"#27500A"},
+            {label:"연평균 CAGR",value:p1(aptAnnR),sub:`${totalYrs}년 기준`,color:"#27500A"},
+          ]}/>
+          <RetBox title="금융자산" items={[
+            {label:"총 납입 원금",value:f억(prin억),sub:`${savYrs}년 납입`},
+            {label:"목표연도 금융자산",value:f억(fin),sub:`${targetYr}년 복리`},
+            {label:"누적 수익률",value:p1(finCumR),color:"#0C447C"},
+            {label:"연평균 CAGR",value:p1(finAnnR),sub:`${totalYrs}년`,color:"#0C447C"},
+          ]}/>
+          <RetBox title="전체 자산 종합" items={[
+            {label:"총 투입 원가",value:f억(totC),sub:"부동산+금융"},
+            {label:"목표연도 총자산",value:f억(grand),sub:`${targetYr}년`},
+            {label:"누적 수익률",value:p1(totCumR),color:"#085041"},
+            {label:"연평균 CAGR",value:p1(totAnnR),sub:`${totalYrs}년`,color:"#085041"},
+          ]}/>
+        </div>
+        {/* 채널 구성 바 */}
+        <div style={{marginTop:14}}>
+          <div style={{fontSize:11,color:"#999",marginBottom:8}}>금융자산 채널별 구성</div>
+          {[...CHANNELS.map(c=>({id:c.id,label:c.label,color:c.color})),{id:"stk",label:"개별 주식",color:"#D85A30"},{id:"dc",label:"퇴직연금",color:"#C06030"}].map(ch=>{
+            const v=ca[ch.id]||0,pct=fin>0?Math.round(v/fin*1000)/10:0;
+            return <div key={ch.id} style={{marginBottom:6}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:3}}>
+                <span style={{display:"flex",alignItems:"center",gap:5}}>
+                  <span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:ch.color}}/>
+                  {ch.label}
+                </span>
+                <span style={{color:"#999"}}>{f억(v)} · {pct}%</span>
+              </div>
+              <div style={{height:6,background:"rgba(0,0,0,0.07)",borderRadius:3,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${pct}%`,background:ch.color,borderRadius:3}}/>
+              </div>
+            </div>;})}
+        </div>
+      </div>
+      <div className="np" style={{textAlign:"center",fontSize:11,color:"#bbb",paddingBottom:12}}>본 시뮬레이터는 참고용 추정치입니다. 실제 세금·대출은 전문가 상담을 권장합니다.</div>
+    </div>
+  </div>;
+}
+ 
+const root=ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+</body>
+</html>

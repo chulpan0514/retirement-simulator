@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>김철민 은퇴 전략 시뮬레이터</title>
+<title>은퇴 전략 시뮬레이터</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -36,18 +36,51 @@ const BRACKETS=[
   {limit:30000,rate:0.38,ded:1994},{limit:50000,rate:0.40,ded:2594},
   {limit:100000,rate:0.42,ded:3594},{limit:Infinity,rate:0.45,ded:6594},
 ];
+// 일반과세
 function calcTax(sell,buy){
   const g=sell-buy;if(g<=0)return 0;
   const base=Math.max(0,g*10000-250);
   let t=0;for(const b of BRACKETS){if(base<=b.limit){t=base*b.rate-b.ded;break;}}
   return Math.max(0,t*1.1)/10000;
 }
+// 중과세 (2주택+20%p, 3주택+30%p)
+function calcTaxHeavy(sell,buy,extra){
+  const g=sell-buy;if(g<=0)return 0;
+  const base=Math.max(0,g*10000-250);
+  let t=0;for(const b of BRACKETS){if(base<=b.limit){t=base*(b.rate+extra)-b.ded;break;}}
+  return Math.max(0,t*1.1)/10000;
+}
+// 1주택 비과세 (12억 초과분만 과세)
 function calcTax1(sell,buy){
   const g=sell-buy;if(g<=0)return 0;if(sell<=12)return 0;
   const ratio=(sell-12)/sell;
   const base=Math.max(0,g*ratio*10000-250);
   let t=0;for(const b of BRACKETS){if(base<=b.limit){t=base*b.rate-b.ded;break;}}
   return Math.max(0,t*1.1)/10000;
+}
+// 아파트 한 채의 양도세 계산
+// apt: {buyPrice,buyYr,sellYr,sellPrice(자동or직접),isAdjusted,isResidence,jeonse,loan}
+// holdingCount: 매도 시점 보유 주택 수
+// isLast1: 매도 후 1주택이 되는지 (달력연도 분리 시)
+function calcAptTax(apt, sellPrice, holdingCount){
+  const buy = apt.buyPrice;
+  const holdYrs = apt.sellYr - apt.buyYr;
+  // 1주택 비과세 판단
+  const is1house = holdingCount === 1;
+  const holdOk = holdYrs >= 2;
+  const liveOk = apt.isResidence || !apt.isAdjusted; // 비조정은 거주요건 불필요
+  if(is1house && holdOk && liveOk) return calcTax1(sellPrice, buy);
+  // 조정지역 다주택 중과
+  if(apt.isAdjusted && holdingCount >= 3) return calcTaxHeavy(sellPrice, buy, 0.30);
+  if(apt.isAdjusted && holdingCount >= 2) return calcTaxHeavy(sellPrice, buy, 0.20);
+  // 일반과세
+  return calcTax(sellPrice, buy);
+}
+// 취득세율
+function acquisitionTaxRate(totalHouses, isAdjusted){
+  if(totalHouses===1) return 0.01; // 1~3% 단순화
+  if(totalHouses===2) return isAdjusted?0.08:0.08;
+  return 0.12;
 }
 function compSav(m,r,y){
   if(y<=0)return 0;const rv=r/100/12,n=Math.round(y*12);
@@ -74,7 +107,7 @@ function cagr(f,c,y){if(c<=0||y<=0||f<=0)return 0;return(Math.pow(f/c,1/y)-1)*10
 function cumR(f,c){if(c<=0)return 0;return(f/c-1)*100;}
 // 현재가치 환산
 function pv(fv,inf,yrs){return fv/Math.pow(1+inf/100,yrs);}
- 
+
 function Slider({label,min,max,step,value,onChange,display,color}){
   return <div style={{marginBottom:8}}>
     <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
@@ -124,10 +157,14 @@ function RetBox({title,items}){
     </div>
   </div>;
 }
- 
+
 function App(){
-  const [title,setTitle]=useState("김철민 은퇴 전략 시뮬레이터");
-  const [subtitle,setSubtitle]=useState("2045 목표 · 부동산 + 금융자산 통합 플랜");
+  // ── 비밀키 인증
+  const [userKey,setUserKey]=useState(()=>localStorage.getItem("sim_key")||"");
+  const [keyInput,setKeyInput]=useState("");
+  const [keyError,setKeyError]=useState("");
+  const [title,setTitle]=useState("은퇴 전략 시뮬레이터");
+  const [subtitle,setSubtitle]=useState("부동산 + 금융자산 통합 은퇴 플랜");
   const [editT,setEditT]=useState(false);
   const [saving,setSaving]=useState(false);
   const [apiLoading,setApiLoading]=useState(false);
@@ -135,41 +172,53 @@ function App(){
   const [scenarioName,setScenarioName]=useState("기본 시나리오");
   const [scenarios,setScenarios]=useState([]); // 시나리오 목록
   const [showPanel,setShowPanel]=useState(false); // 시나리오 패널 표시
- 
-  // ── 부동산
+
+  // ── 부동산 (동적 리스트)
   const [targetYr,setTargetYr]=useState(2045);
-  const [hwYr,setHwYr]=useState(2029);const [hwRt,setHwRt]=useState(5);
-  const [hwD,setHwD]=useState("");const [hwLoan,setHwLoan]=useState(4.5);
-  const [gmYr,setGmYr]=useState(2030);const [gmRt,setGmRt]=useState(7);
-  const [gmD,setGmD]=useState("");const [gmJ,setGmJ]=useState(4.85);
+  const mkApt=(id,overrides={})=>({
+    id, name:"아파트 "+id,
+    buyPrice:8.0, buyYr:2024,
+    loan:3.0, jeonse:0,
+    isResidence:true,   // 실거주 여부
+    isAdjusted:false,   // 조정대상지역 여부
+    sellYr:2030, annRt:6,
+    sellDirect:"",      // 목표 매도가 직접 입력
+    ...overrides,
+  });
+  const [apts,setApts]=useState([
+    mkApt(1,{name:"잠실 엘센츠",buyPrice:15,buyYr:2024,loan:5,jeonse:0,isResidence:true,isAdjusted:false,sellYr:2035,annRt:5,sellDirect:"25"}),
+  ]);
+  const [aptIdSeq,setAptIdSeq]=useState(2);
+  // 신규 매수 아파트
   const [newYr,setNewYr]=useState(2030);const [newP,setNewP]=useState(15);
   const [newD,setNewD]=useState("");const [newL,setNewL]=useState(3);const [newRt,setNewRt]=useState(8);
- 
+
   // ── 주담대 상환 계산기
   const [mortRate,setMortRate]=useState(3.5);   // 이자율 %
   const [mortYears,setMortYears]=useState(30);  // 상환기간 년
   // 실제 대출금액은 newL(신규대출)을 기본으로, 별도 조정 슬라이더
   const [mortLoanAdj,setMortLoanAdj]=useState(0); // 신규대출 대비 조정(0=동일)
- 
+
   // ── 현금
-  const [salary,setSalary]=useState(810);const [bonusY,setBonusY]=useState(2760);
+  const [salary,setSalary]=useState(910);const [bonusY,setBonusY]=useState(2760);
   const [living,setLiving]=useState(257);const [edu,setEdu]=useState(104);
   // 저축 종료 = 목표 퇴직 시점 연동 (오프셋으로 미세조정, -5~+5년)
   const [savEndOffset,setSavEndOffset]=useState(0);
   const [chM,setChM]=useState(()=>Object.fromEntries(CHANNELS.map(c=>[c.id,c.defM])));
   const [chRt,setChRt]=useState(()=>Object.fromEntries(CHANNELS.map(c=>[c.id,c.defRt])));
- 
+
   // ── 주식
   const [stocks,setStocks]=useState([]);const [sN,setSN]=useState("");const [sM,setSM]=useState("");const [sR,setSR]=useState("");const [sid,setSid]=useState(0);
- 
+
   // ── 퇴직연금
-  const [dcOn,setDcOn]=useState(true);const [dcY,setDcY]=useState(1200);const [dcRt,setDcRt]=useState(5);const [dcEx,setDcEx]=useState(3000);
- 
+  const [dcOn,setDcOn]=useState(true);const [dcType,setDcType]=useState('DB');
+  const [dcY,setDcY]=useState(1200);const [dcRt,setDcRt]=useState(5);const [dcEx,setDcEx]=useState(3000);
+
   // ── 국민연금·주택연금
   const [cmAge,setCmAge]=useState(68);const [cmPen,setCmPen]=useState(171);
   const [yrAge,setYrAge]=useState(68);const [yrPen,setYrPen]=useState(90);
   const [houseOn,setHouseOn]=useState(true);const [hAge,setHAge]=useState(68);const [hVal,setHVal]=useState(20);
- 
+
   // ── 은퇴 후 금융자산 인출 전략
   const [infRate,setInfRate]=useState(2.5);      // 물가상승률
   const [divPct,setDivPct]=useState(50);         // 배당 포트 비중 %
@@ -177,28 +226,44 @@ function App(){
   const [sellPct,setSellPct]=useState(50);        // 매도 포트 비중 % (100-divPct)
   const [annSellPct,setAnnSellPct]=useState(4);  // 매도 포트에서 연간 매도 비율 %
   const [sellPortRt,setSellPortRt]=useState(8);   // 매도 포트 운용 수익률 %
- 
+
   // ── 주담대 계산
-  const mortLoan = Math.max(0, newL + mortLoanAdj); // 실제 대출금액 (억)
-  const mortMonthly = calcMortgage(mortLoan, mortRate, mortYears); // 만원/월
- 
-  // ── 부동산 계산
-  const hwSell=hwD!==""&&!isNaN(+hwD)?+hwD:Math.round(proj(8.25,hwRt,hwYr-2024)*10)/10;
-  const gmSell=gmD!==""&&!isNaN(+gmD)?+gmD:Math.round(proj(8.1,gmRt,gmYr-2024)*10)/10;
+  const mortLoan = Math.max(0, newL + mortLoanAdj);
+  const mortMonthly = calcMortgage(mortLoan, mortRate, mortYears);
+
+  // ── 부동산 동적 계산
+  // 매도 순서 정렬 (매도연도 오름차순)
+  const sortedApts = [...apts].sort((a,b)=>a.sellYr-b.sellYr);
+  // 각 아파트 매도 시점의 보유 주택 수 계산
+  let aptResults = [];
+  sortedApts.forEach((apt,idx)=>{
+    const holdingAtSell = apts.length - idx; // 매도 순서상 남은 주택 수
+    const sellPrice = apt.sellDirect!==""&&!isNaN(+apt.sellDirect)
+      ? +apt.sellDirect
+      : Math.round(proj(apt.buyPrice, apt.annRt, apt.sellYr-apt.buyYr)*10)/10;
+    const tax = calcAptTax(apt, sellPrice, holdingAtSell);
+    const net = sellPrice - tax - apt.loan - apt.jeonse;
+    aptResults.push({...apt, sellPrice, tax, net});
+  });
+  const pool = Math.round(aptResults.reduce((s,r)=>s+r.net,0)*100)/100;
+  const aptCost = apts.reduce((s,a)=>s+a.buyPrice,0);
   const newBuy=newD!==""&&!isNaN(+newD)?+newD:newP;
-  const hwFirst=hwYr<gmYr;
-  const hwTax=calcTax(hwSell,8.25);
-  const gmTax=hwFirst?calcTax1(gmSell,8.1):calcTax(gmSell,8.1);
-  const pool=Math.round(((hwSell-hwTax-hwLoan)+(gmSell-gmTax-gmJ))*100)/100;
   const aptFinal=Math.max(0,proj(newBuy,newRt,targetYr-newYr)-newL);
-  const aptCost=16.35;
- 
+
+  // 아파트 CRUD
+  function updateApt(id,field,val){setApts(p=>p.map(a=>a.id===id?{...a,[field]:val}:a));}
+  function addApt(){
+    setApts(p=>[...p,mkApt(aptIdSeq)]);
+    setAptIdSeq(n=>n+1);
+  }
+  function removeApt(id){setApts(p=>p.filter(a=>a.id!==id));}
+
   // ── 현금흐름 (주담대 = 원리금균등상환액 자동 계산)
   const incomeY=salary*12+bonusY;
   const expY=(mortMonthly+living+edu)*12;
   const availY=incomeY-expY;
   const availM=availY/12;
- 
+
   // ── 채널 누적
   const savEnd=Math.min(targetYr, Math.max(NOW+1, targetYr+savEndOffset)); // 퇴직연도 연동
   const savYrs=Math.max(0,savEnd-NOW);const extYrs=Math.max(0,targetYr-savEnd);const totalYrs=targetYr-NOW;
@@ -213,13 +278,16 @@ function App(){
   let dc=0;if(dcOn){const m=dcY/12;const ae=compSav(m*10000,dcRt,savYrs);const nv=(ae*Math.pow(1+dcRt/100,extYrs))/1e8;const ev=(dcEx/10000)*Math.pow(1+dcRt/100,totalYrs);dc=nv+ev;prin+=dcY*savYrs+dcEx;}
   ca["dc"]=Math.round(dc*10)/10;fin+=dc;fin=Math.round(fin*10)/10;
   const prin억=prin/10000;
-  const chY=chMtot*12;const allY=chY+(dcOn?dcY:0);
+  const chY=chMtot*12;
+  // DB형: 회사 적립 → 가용자산 차감 안함 / DC형만 차감
+  const dcYforAvail=(dcOn&&dcType==='DC')?dcY:0;
+  const allY=chY+dcYforAvail;
   const usePct=availY>0?allY/availY*100:0;const remY=availY-allY;
   const aptCumR=Math.round(cumR(aptFinal,aptCost)*10)/10;const aptAnnR=Math.round(cagr(aptFinal,aptCost,totalYrs)*10)/10;
   const finCumR=Math.round(cumR(fin,prin억)*10)/10;const finAnnR=Math.round(cagr(fin,prin억,totalYrs)*10)/10;
   const grand=aptFinal+fin;const totC=aptCost+prin억;
   const totCumR=Math.round(cumR(grand,totC)*10)/10;const totAnnR=Math.round(cagr(grand,totC,totalYrs)*10)/10;
- 
+
   // ── 은퇴 후 금융자산 인출 전략 계산
   const divPortAmt = fin * (divPct/100);           // 배당 포트 (억)
   const sellPortAmt = fin * ((100-divPct)/100);    // 매도 포트 (억)
@@ -235,7 +303,7 @@ function App(){
   const sellIncomeM_pv = sellIncomeM만/pvFactor;
   const divIncomeY_pv = divIncomeY억*10000/pvFactor; // 만원
   const sellIncomeY_pv = sellIncomeY억*10000/pvFactor;
- 
+
   // ── 국민연금·주택연금
   const penSum=cmPen+yrPen;
   const houseMon원=houseOn?Math.round(Math.min(hVal,12)*1e8*(0.0042+(hAge-60)*0.0002)):0;
@@ -243,7 +311,7 @@ function App(){
   const housePv만 = houseMon원/10000/pvFactor;
   const totalRetireM만 = penSum + divIncomeM만 + sellIncomeM만 + houseMon원/10000;
   const totalRetireM_pv = penPv만 + divIncomeM_pv + sellIncomeM_pv + housePv만;
- 
+
   function addStk(){const m=parseFloat(sM),r=parseFloat(sR);if(!sN.trim()||isNaN(m)||isNaN(r))return;setStocks(p=>[...p,{id:sid,name:sN.trim(),m,rt:r}]);setSid(n=>n+1);setSN("");setSM("");setSR("");}
   function delStk(id){setStocks(p=>p.filter(s=>s.id!==id));}
   function updStk(id,f,v){setStocks(p=>p.map(s=>s.id===id?{...s,[f]:v}:s));}
@@ -251,18 +319,18 @@ function App(){
   function getState() {
     return {
       title,subtitle,targetYr,savEndOffset,
-      hwYr,hwRt,hwD,hwLoan,gmYr,gmRt,gmD,gmJ,
+      apts,aptIdSeq,
       newYr,newP,newD,newL,newRt,mortRate,mortYears,mortLoanAdj,
       salary,bonusY,living,edu,
       chM,chRt,
       stocks,
-      dcOn,dcY,dcRt,dcEx,
+      dcOn,dcType,dcY,dcRt,dcEx,
       cmAge,cmPen,yrAge,yrPen,
       houseOn,hAge,hVal,
       infRate,divPct,divRate,sellPortRt,annSellPct,
     };
   }
- 
+
   // ── 불러온 객체를 state에 복원
   function applyState(s) {
     if(!s) return;
@@ -270,14 +338,8 @@ function App(){
     if(s.subtitle!==undefined) setSubtitle(s.subtitle);
     if(s.targetYr!==undefined) setTargetYr(s.targetYr);
     if(s.savEndOffset!==undefined) setSavEndOffset(s.savEndOffset);
-    if(s.hwYr!==undefined) setHwYr(s.hwYr);
-    if(s.hwRt!==undefined) setHwRt(s.hwRt);
-    if(s.hwD!==undefined) setHwD(s.hwD);
-    if(s.hwLoan!==undefined) setHwLoan(s.hwLoan);
-    if(s.gmYr!==undefined) setGmYr(s.gmYr);
-    if(s.gmRt!==undefined) setGmRt(s.gmRt);
-    if(s.gmD!==undefined) setGmD(s.gmD);
-    if(s.gmJ!==undefined) setGmJ(s.gmJ);
+    if(s.apts!==undefined) setApts(s.apts);
+    if(s.aptIdSeq!==undefined) setAptIdSeq(s.aptIdSeq);
     if(s.newYr!==undefined) setNewYr(s.newYr);
     if(s.newP!==undefined) setNewP(s.newP);
     if(s.newD!==undefined) setNewD(s.newD);
@@ -294,6 +356,7 @@ function App(){
     if(s.chRt!==undefined) setChRt(s.chRt);
     if(s.stocks!==undefined) setStocks(s.stocks);
     if(s.dcOn!==undefined) setDcOn(s.dcOn);
+    if(s.dcType!==undefined) setDcType(s.dcType);
     if(s.dcY!==undefined) setDcY(s.dcY);
     if(s.dcRt!==undefined) setDcRt(s.dcRt);
     if(s.dcEx!==undefined) setDcEx(s.dcEx);
@@ -310,23 +373,23 @@ function App(){
     if(s.sellPortRt!==undefined) setSellPortRt(s.sellPortRt);
     if(s.annSellPct!==undefined) setAnnSellPct(s.annSellPct);
   }
- 
+
   // ── 시나리오 목록 불러오기
   async function fetchList() {
     try {
-      const res = await fetch(API_URL + "?action=list");
+      const res = await fetch(API_URL + "?action=list&key=" + encodeURIComponent(userKey));
       const json = await res.json();
       if(json.ok) setScenarios(json.scenarios);
     } catch(e) { console.error(e); }
   }
- 
+
   // ── 저장
   async function apiSave() {
     setApiLoading(true); setApiMsg("");
     try {
       const res = await fetch(API_URL, {
         method:"POST",
-        body: JSON.stringify({ action:"save", name:scenarioName, data:getState() }),
+        body: JSON.stringify({ action:"save", key:userKey, name:scenarioName, data:getState() }),
       });
       const json = await res.json();
       if(json.ok) {
@@ -339,12 +402,12 @@ function App(){
       setApiMsg("❌ 네트워크 오류: " + e.message);
     } finally { setApiLoading(false); setTimeout(()=>setApiMsg(""),4000); }
   }
- 
+
   // ── 불러오기
   async function apiLoad(name) {
     setApiLoading(true); setApiMsg("");
     try {
-      const res = await fetch(API_URL + "?action=load&name=" + encodeURIComponent(name));
+      const res = await fetch(API_URL + "?action=load&key=" + encodeURIComponent(userKey) + "&name=" + encodeURIComponent(name));
       const json = await res.json();
       if(json.ok) {
         applyState(json.data);
@@ -358,13 +421,13 @@ function App(){
       setApiMsg("❌ 네트워크 오류: " + e.message);
     } finally { setApiLoading(false); setTimeout(()=>setApiMsg(""),5000); }
   }
- 
+
   // ── 삭제
   async function apiDelete(name) {
     if(!confirm("'" + name + "' 시나리오를 삭제할까요?")) return;
     setApiLoading(true);
     try {
-      const res = await fetch(API_URL + "?action=delete&name=" + encodeURIComponent(name));
+      const res = await fetch(API_URL + "?action=delete&key=" + encodeURIComponent(userKey) + "&name=" + encodeURIComponent(name));
       const json = await res.json();
       if(json.ok) { setApiMsg("🗑 '" + name + "' 삭제 완료"); fetchList(); }
       else setApiMsg("❌ 삭제 실패: " + json.error);
@@ -372,10 +435,23 @@ function App(){
       setApiMsg("❌ 네트워크 오류: " + e.message);
     } finally { setApiLoading(false); setTimeout(()=>setApiMsg(""),3000); }
   }
- 
+
   // 초기 로드 시 목록 가져오기
   useEffect(()=>{ fetchList(); },[]);
- 
+
+  // ── 키 설정
+  function handleKeySubmit(){
+    const k = keyInput.trim();
+    if(!k){ setKeyError("키를 입력해주세요"); return; }
+    if(k.length < 4){ setKeyError("키는 4자 이상이어야 해요"); return; }
+    if(!/^[a-zA-Z0-9가-힣_]+$/.test(k)){ setKeyError("영문, 숫자, 한글, _ 만 사용 가능해요"); return; }
+    localStorage.setItem("sim_key", k);
+    setUserKey(k);
+    setKeyError("");
+    // 저장된 데이터 자동 불러오기 시도
+    setTimeout(()=>apiLoad(""), 300);
+  }
+
   function save(){
     setSaving(true);
     const st=document.createElement("style");
@@ -383,7 +459,7 @@ function App(){
     document.head.appendChild(st);
     setTimeout(()=>{window.print();setTimeout(()=>{document.head.removeChild(st);setSaving(false);},500);},100);
   }
- 
+
   const P={background:"#fff",border:"0.5px solid rgba(0,0,0,0.1)",borderRadius:12,padding:16,marginBottom:12};
   const PT={fontSize:13,fontWeight:500,color:"#666",marginBottom:12,paddingBottom:8,borderBottom:"0.5px solid rgba(0,0,0,0.08)"};
   const SEC={fontSize:11,fontWeight:500,color:"#999",letterSpacing:".04em",textTransform:"uppercase",margin:"12px 0 8px"};
@@ -393,13 +469,47 @@ function App(){
   const G5={display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8};
   const NB=(on)=>({width:72,fontSize:13,padding:"3px 7px",borderRadius:6,border:`0.5px solid ${on?"#378ADD":"rgba(0,0,0,0.2)"}`,background:on?"#E6F1FB":"#f5f5f5",textAlign:"right"});
   const BC=usePct>100?"#D85A30":usePct>80?"#BA7517":"#378ADD";
- 
+
   return <div style={{fontFamily:"system-ui,sans-serif",fontSize:14,lineHeight:1.5,color:"#111",background:"#f0f0f0",minHeight:"100vh"}}>
+    {/* ── 비밀키 미설정 시 로그인 화면 */}
+    {!userKey && <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.7)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:40,maxWidth:420,width:"90%",textAlign:"center",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
+        <div style={{fontSize:32,marginBottom:12}}>🏠</div>
+        <div style={{fontSize:22,fontWeight:700,marginBottom:8}}>은퇴 전략 시뮬레이터</div>
+        <div style={{fontSize:14,color:"#666",marginBottom:24,lineHeight:1.6}}>
+          나만의 키를 설정하면 데이터가 저장되고<br/>
+          다음에 접속해도 불러올 수 있어요
+        </div>
+        <input value={keyInput} onChange={e=>setKeyInput(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&handleKeySubmit()}
+          placeholder="나만의 키 입력 (예: hong2045)"
+          style={{width:"100%",fontSize:16,padding:"12px 16px",borderRadius:8,border:"1.5px solid rgba(0,0,0,0.2)",marginBottom:8,textAlign:"center"}}/>
+        {keyError&&<div style={{fontSize:12,color:"#D85A30",marginBottom:8}}>{keyError}</div>}
+        <button onClick={handleKeySubmit}
+          style={{width:"100%",padding:"12px",borderRadius:8,border:"none",background:"#378ADD",color:"#fff",fontSize:16,fontWeight:600,cursor:"pointer",marginBottom:12}}>
+          시작하기
+        </button>
+        <div style={{fontSize:11,color:"#999",lineHeight:1.6}}>
+          ⚠️ 키는 비밀번호처럼 관리하세요<br/>
+          키를 잊어버리면 데이터를 찾을 수 없어요
+        </div>
+      </div>
+    </div>}
+
     {/* 상단바 */}
     <div className="np" style={{position:"sticky",top:0,zIndex:100,background:"#fff",borderBottom:"0.5px solid rgba(0,0,0,0.1)",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
       <div style={{flex:1}}>
         <div style={{fontSize:13,fontWeight:600}}>{title}</div>
-        <div style={{fontSize:11,color:"#999"}}>{subtitle}</div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{fontSize:11,color:"#999"}}>{subtitle}</div>
+          {userKey&&<div style={{fontSize:11,background:"#EAF3DE",color:"#3B6D11",padding:"2px 8px",borderRadius:99,border:"0.5px solid #639922"}}>
+            🔑 {userKey}
+          </div>}
+          {userKey&&<button onClick={()=>{if(confirm("로그아웃 하시겠어요?")){localStorage.removeItem("sim_key");setUserKey("");setKeyInput("");}}}
+            style={{fontSize:11,padding:"2px 8px",borderRadius:5,border:"0.5px solid rgba(0,0,0,0.15)",background:"#fff",color:"#666",cursor:"pointer"}}>
+            로그아웃
+          </button>}
+        </div>
       </div>
       {/* 시나리오 이름 입력 */}
       <input value={scenarioName} onChange={e=>setScenarioName(e.target.value)}
@@ -421,14 +531,14 @@ function App(){
         {saving?"인쇄창...":"🖼 PDF"}
       </button>
     </div>
- 
+
     {/* API 메시지 */}
     {apiMsg&&<div className="np" style={{textAlign:"center",fontSize:12,padding:"6px",
       background:apiMsg.startsWith("✅")?"#EAF3DE":apiMsg.startsWith("🗑")?"#f5f5f5":"#FAECE7",
       color:apiMsg.startsWith("✅")?"#3B6D11":apiMsg.startsWith("🗑")?"#666":"#993C1D"}}>
       {apiMsg}
     </div>}
- 
+
     {/* 시나리오 목록 패널 */}
     {showPanel&&<div className="np" style={{position:"sticky",top:57,zIndex:99,background:"#fff",borderBottom:"0.5px solid rgba(0,0,0,0.1)",padding:"12px 16px",maxHeight:280,overflowY:"auto"}}>
       <div style={{fontSize:12,fontWeight:600,color:"#666",marginBottom:8}}>저장된 시나리오</div>
@@ -453,9 +563,9 @@ function App(){
           </div>)
       }
     </div>}
- 
+
     <div className="np" style={{textAlign:"center",fontSize:11,color:"#aaa",padding:"3px 0"}}>🖼 PDF 버튼 → 인쇄창 → "PDF로 저장" 선택</div>
- 
+
     <div style={{background:"#f0f0f0",padding:"20px 16px"}}>
       {/* 헤더 */}
       <div style={{marginBottom:16,padding:"20px 24px",background:"#111",borderRadius:16,color:"#fff"}}>
@@ -491,7 +601,7 @@ function App(){
           <span>부동산 {f억(aptFinal)} · 금융자산 {f억(fin)} · 총수익률 {p1(totCumR)}</span>
         </div>
       </div>
- 
+
       {/* ── 목표 퇴직 시점 */}
       <div style={P}><div style={PT}>목표 퇴직 시점</div>
         <Slider label="퇴직 기준 연도" min={2035} max={2055} step={1} value={targetYr} onChange={v=>{setTargetYr(v);setSavEndOffset(0);}}
@@ -533,71 +643,198 @@ function App(){
           </div>
         </div>
       </div>
- 
+
       {/* ── 부동산 */}
-      <div style={P}><div style={PT}>부동산 매도 시나리오</div>
-        <div style={{fontSize:12,padding:"8px 11px",borderRadius:8,marginBottom:6,background:hwFirst?"#EAF3DE":"#FAECE7",color:hwFirst?"#3B6D11":"#993C1D",borderLeft:`3px solid ${hwFirst?"#639922":"#D85A30"}`}}>
-          {hwFirst?`✅ 전략 B — 화랑대(${hwYr}) 먼저 매도 → 광명(${gmYr}) 1주택 비과세 (비조정지역·보유 ${gmYr-2024}년)`:`⚠️ 광명 먼저 매도 시 2주택자 → 일반과세. 화랑대를 ${gmYr}년 이전 먼저 매도하면 광명 비과세`}
-        </div>
-        <div style={{fontSize:11,padding:"6px 10px",borderRadius:6,marginBottom:10,background:"#fffbf0",border:"0.5px solid #e8d48a",color:"#7a6200"}}>
-          화랑대: 2주택자 → 일반과세 | 광명: 비조정지역·보유 2년↑ → 1주택 비과세{gmSell>12?` (12억 초과 ${f억(gmSell-12)} 과세)`:""}
-        </div>
-        <div style={G2}>
-          <div>
-            <div style={SEC}>화랑대 이편한세상 (중랑구 25평 · 매수 8.25억)</div>
-            <Slider label="매도 연도" min={2026} max={2033} step={1} value={hwYr} onChange={setHwYr} display={`${hwYr}년`}/>
-            <Slider label="연 상승률" min={0} max={20} step={0.5} value={hwRt} onChange={setHwRt} display={`${hwRt}%`}/>
-            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
-              <span style={{fontSize:12,color:"#666",minWidth:80}}>목표 매도가</span>
-              <input type="number" value={hwD} onChange={e=>setHwD(e.target.value)} placeholder="자동" step="0.1" style={NB(!!hwD)}/>
-              <span style={{fontSize:11,color:"#999"}}>억</span>
-            </div>
-            <Slider label="담보대출 잔액" min={0} max={7} step={0.1} value={hwLoan} onChange={setHwLoan} display={f억(hwLoan)}/>
-          </div>
-          <div>
-            <div style={SEC}>광명 푸르지오 센트베르 (25평 · 매수 8.1억)</div>
-            <Slider label="매도 연도" min={2026} max={2034} step={1} value={gmYr} onChange={setGmYr} display={`${gmYr}년`}/>
-            <Slider label="연 상승률" min={0} max={20} step={0.5} value={gmRt} onChange={setGmRt} display={`${gmRt}%`}/>
-            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
-              <span style={{fontSize:12,color:"#666",minWidth:80}}>목표 매도가</span>
-              <input type="number" value={gmD} onChange={e=>setGmD(e.target.value)} placeholder="자동" step="0.1" style={NB(!!gmD)}/>
-              <span style={{fontSize:11,color:"#999"}}>억</span>
-            </div>
-            <Slider label="전세보증금 반환" min={0} max={7} step={0.1} value={gmJ} onChange={setGmJ} display={f억(gmJ)}/>
+      <div style={P}>
+        <div style={{...PT,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span>보유 아파트 매도 시나리오</span>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <span style={{fontSize:11,color:"#999"}}>총 {apts.length}채 보유</span>
+            <button onClick={addApt}
+              style={{fontSize:12,padding:"4px 12px",borderRadius:6,border:"0.5px solid #378ADD",background:"#E6F1FB",color:"#0C447C",cursor:"pointer",fontWeight:500}}>
+              + 아파트 추가
+            </button>
           </div>
         </div>
-        <div style={{fontSize:11,background:"#fffbf0",border:"0.5px solid #e8d48a",borderRadius:8,padding:"8px 12px",marginTop:10,color:"#7a6200",lineHeight:1.8}}>
-          <strong>양도세 계산 근거</strong> (누진세율+지방소득세 10%, 기본공제 250만원)<br/>
-          • 화랑대: 차익 {f억(Math.max(0,hwSell-8.25))} → 세금 <strong>{f억2(hwTax)}</strong> (2주택자 일반과세)<br/>
-          • 광명: 차익 {f억(Math.max(0,gmSell-8.1))} → 세금 <strong>{f억2(gmTax)}</strong>{hwFirst?(gmSell<=12?" (1주택 비과세 ✓)":" (12억 초과분 과세)"):" (2주택자 일반과세)"}<br/>
-          ※ 장기보유특별공제 미반영 — 실제 세금은 더 낮을 수 있음
+
+        {/* 아파트 0채일 때 빈 상태 */}
+        {apts.length===0&&<div style={{textAlign:"center",padding:"32px 16px",background:"#f9f9f9",borderRadius:10,border:"1px dashed rgba(0,0,0,0.15)",marginBottom:10}}>
+          <div style={{fontSize:32,marginBottom:8}}>🏠</div>
+          <div style={{fontSize:14,color:"#666",marginBottom:4}}>보유 아파트가 없어요</div>
+          <div style={{fontSize:12,color:"#999",marginBottom:16}}>아파트를 추가하면 매도 시뮬레이션과 양도세 계산이 가능해요</div>
+          <button onClick={addApt}
+            style={{fontSize:13,padding:"8px 20px",borderRadius:8,border:"0.5px solid #378ADD",background:"#E6F1FB",color:"#0C447C",cursor:"pointer",fontWeight:500}}>
+            + 첫 번째 아파트 추가
+          </button>
+        </div>}
+
+        {/* 아파트 카드 목록 */}
+        {apts.map((apt,idx)=>{
+          const res=aptResults.find(r=>r.id===apt.id)||{};
+          const holdingAtSell=apts.length-aptResults.findIndex(r=>r.id===apt.id);
+          const is1house=holdingAtSell===1;
+          const holdYrs=apt.sellYr-apt.buyYr;
+          const liveOk=apt.isResidence||!apt.isAdjusted;
+          const exempt=is1house&&holdYrs>=2&&liveOk;
+          const over12=exempt&&(res.sellPrice||0)>12;
+          const taxLabel=exempt?(over12?`비과세+초과분 과세`:"비과세 ✓"):apt.isAdjusted&&holdingAtSell>=2?"중과세":"일반과세";
+          const taxColor=exempt?"#3B6D11":apt.isAdjusted&&holdingAtSell>=2?"#993C1D":"#854F0B";
+          return <div key={apt.id} style={{background:"#f9f9f9",borderRadius:10,padding:14,marginBottom:10,border:"0.5px solid rgba(0,0,0,0.1)"}}>
+            {/* 카드 헤더 */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{background:"#378ADD",color:"#fff",borderRadius:99,width:22,height:22,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{idx+1}</div>
+                <input value={apt.name} onChange={e=>updateApt(apt.id,"name",e.target.value)}
+                  style={{fontSize:14,fontWeight:600,border:"none",background:"transparent",color:"#111",width:200}}
+                  placeholder="아파트 이름"/>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:11,padding:"2px 8px",borderRadius:99,background:taxColor+"22",color:taxColor,border:`0.5px solid ${taxColor}55`,fontWeight:500}}>{taxLabel}</span>
+                <button onClick={()=>removeApt(apt.id)}
+                  style={{fontSize:11,padding:"3px 8px",borderRadius:5,border:"0.5px solid rgba(0,0,0,0.15)",background:"#fff",color:"#D85A30",cursor:"pointer"}}>삭제</button>
+              </div>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              {/* 왼쪽: 매수 정보 */}
+              <div>
+                <div style={SEC}>매수 정보</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+                  <div>
+                    <div style={{fontSize:11,color:"#888",marginBottom:3}}>매수가 (억)</div>
+                    <input type="number" value={apt.buyPrice} step="0.1" min="0"
+                      onChange={e=>updateApt(apt.id,"buyPrice",+e.target.value)}
+                      style={{width:"100%",fontSize:14,fontWeight:600,padding:"5px 8px",border:"0.5px solid rgba(0,0,0,0.18)",borderRadius:6,background:"#fff"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11,color:"#888",marginBottom:3}}>매수 연도</div>
+                    <input type="number" value={apt.buyYr} step="1" min="2000" max="2040"
+                      onChange={e=>updateApt(apt.id,"buyYr",+e.target.value)}
+                      style={{width:"100%",fontSize:14,fontWeight:600,padding:"5px 8px",border:"0.5px solid rgba(0,0,0,0.18)",borderRadius:6,background:"#fff"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11,color:"#888",marginBottom:3}}>담보대출 (억)</div>
+                    <input type="number" value={apt.loan} step="0.1" min="0"
+                      onChange={e=>updateApt(apt.id,"loan",+e.target.value)}
+                      style={{width:"100%",fontSize:14,fontWeight:600,padding:"5px 8px",border:"0.5px solid rgba(0,0,0,0.18)",borderRadius:6,background:"#fff"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11,color:"#888",marginBottom:3}}>전세보증금 (억)</div>
+                    <input type="number" value={apt.jeonse} step="0.1" min="0"
+                      onChange={e=>updateApt(apt.id,"jeonse",+e.target.value)}
+                      style={{width:"100%",fontSize:14,fontWeight:600,padding:"5px 8px",border:"0.5px solid rgba(0,0,0,0.18)",borderRadius:6,background:"#fff"}}/>
+                  </div>
+                </div>
+                {/* 과세 조건 체크 */}
+                <div style={SEC}>과세 조건</div>
+                <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                  <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:12}}>
+                    <input type="checkbox" checked={apt.isResidence} onChange={e=>updateApt(apt.id,"isResidence",e.target.checked)}
+                      style={{width:15,height:15,accentColor:"#378ADD"}}/>
+                    <span>실거주 중 (2년 거주요건 충족)</span>
+                  </label>
+                  <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:12}}>
+                    <input type="checkbox" checked={apt.isAdjusted} onChange={e=>updateApt(apt.id,"isAdjusted",e.target.checked)}
+                      style={{width:15,height:15,accentColor:"#D85A30"}}/>
+                    <span style={{color:apt.isAdjusted?"#993C1D":"#111"}}>조정대상지역 취득 {apt.isAdjusted?"(거주요건 필수)":""}</span>
+                  </label>
+                </div>
+                {/* 과세 설명 */}
+                <div style={{marginTop:8,padding:"6px 10px",borderRadius:6,background:taxColor+"11",border:`0.5px solid ${taxColor}33`,fontSize:11,color:taxColor,lineHeight:1.6}}>
+                  {exempt&&!over12&&"12억 이하 전액 비과세"}
+                  {exempt&&over12&&`12억 초과분 ${f억((res.sellPrice||0)-12)} 과세`}
+                  {!exempt&&holdingAtSell>=2&&apt.isAdjusted&&"조정지역 다주택 중과세 적용"}
+                  {!exempt&&!(holdingAtSell>=2&&apt.isAdjusted)&&"양도차익 누진세율 + 지방소득세 10%"}
+                  {!exempt&&holdYrs<2&&" (보유 2년 미만)"}
+                </div>
+              </div>
+
+              {/* 오른쪽: 매도 정보 */}
+              <div>
+                <div style={SEC}>매도 계획</div>
+                <Slider label="매도 연도" min={2026} max={2045} step={1} value={apt.sellYr}
+                  onChange={v=>updateApt(apt.id,"sellYr",v)} display={`${apt.sellYr}년 (보유 ${apt.sellYr-apt.buyYr}년)`}/>
+                <Slider label="연간 상승률" min={0} max={20} step={0.5} value={apt.annRt}
+                  onChange={v=>updateApt(apt.id,"annRt",v)} display={`${apt.annRt}%`}/>
+                <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:12}}>
+                  <span style={{fontSize:12,color:"#666",minWidth:80}}>목표 매도가</span>
+                  <input type="number" value={apt.sellDirect} onChange={e=>updateApt(apt.id,"sellDirect",e.target.value)}
+                    placeholder="자동" step="0.1" min="0"
+                    style={{width:72,fontSize:13,padding:"3px 7px",borderRadius:6,
+                            border:`0.5px solid ${apt.sellDirect?"#378ADD":"rgba(0,0,0,0.2)"}`,
+                            background:apt.sellDirect?"#E6F1FB":"#f5f5f5",textAlign:"right"}}/>
+                  <span style={{fontSize:11,color:"#999"}}>억 (비우면 자동)</span>
+                </div>
+                {/* 결과 미니 카드 */}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:4}}>
+                  <div style={{background:"#fff",borderRadius:6,padding:"8px 10px",border:"0.5px solid rgba(0,0,0,0.08)"}}>
+                    <div style={{fontSize:10,color:"#666",marginBottom:2}}>예상 매도가</div>
+                    <div style={{fontSize:15,fontWeight:700,color:"#111"}}>{f억(res.sellPrice||0)}</div>
+                    <div style={{fontSize:10,color:"#999"}}>차익 {f억(Math.max(0,(res.sellPrice||0)-apt.buyPrice))}</div>
+                  </div>
+                  <div style={{background:"#fff",borderRadius:6,padding:"8px 10px",border:"0.5px solid rgba(0,0,0,0.08)"}}>
+                    <div style={{fontSize:10,color:taxColor,marginBottom:2}}>양도세</div>
+                    <div style={{fontSize:15,fontWeight:700,color:taxColor}}>{f억2(res.tax||0)}</div>
+                    <div style={{fontSize:10,color:"#999"}}>순수령 {f억2(res.net||0)}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })}
+
+        {/* 매도 순서 안내 */}
+        {aptResults.length>1&&<div style={{fontSize:11,padding:"8px 12px",borderRadius:8,marginBottom:10,
+            background:"#E6F1FB",color:"#0C447C",border:"0.5px solid #378ADD55"}}>
+          📋 매도 순서 (연도 기준): {aptResults.map((r,i)=>`${i+1}. ${r.name}(${r.sellYr}년)`).join(" → ")}
+        </div>}
+
+        {/* 현금풀 요약 */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginTop:4}}>
+          <div style={{background:"#FAEEDA",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:"#854F0B",marginBottom:3}}>총 매도 후 현금풀</div>
+            <div style={{fontSize:18,fontWeight:700,color:"#633806"}}>{f억2(pool)}</div>
+            <div style={{fontSize:11,color:"#854F0B",marginTop:2}}>세금·대출·전세 모두 차감</div>
+          </div>
+          <div style={{background:"#EAF3DE",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:"#3B6D11",marginBottom:3}}>총 양도세</div>
+            <div style={{fontSize:18,fontWeight:700,color:"#27500A"}}>{f억2(aptResults.reduce((s,r)=>s+(r.tax||0),0))}</div>
+            <div style={{fontSize:11,color:"#3B6D11",marginTop:2}}>장기보유공제 미적용 (보수적)</div>
+          </div>
+          <div style={{background:"#E6F1FB",borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:"#185FA5",marginBottom:3}}>총 매수 원가</div>
+            <div style={{fontSize:18,fontWeight:700,color:"#0C447C"}}>{f억(aptCost)}</div>
+            <div style={{fontSize:11,color:"#185FA5",marginTop:2}}>{apts.length}채 합산</div>
+          </div>
         </div>
+
+        {/* 신규 매수 */}
         <hr style={{border:"none",borderTop:"0.5px solid rgba(0,0,0,0.08)",margin:"14px 0"}}/>
         <div style={SEC}>신규 매수 아파트</div>
-        <div style={G2}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
-            <Slider label="매수 연도" min={2027} max={2035} step={1} value={newYr} onChange={setNewYr} display={`${newYr}년`}/>
-            <Slider label="슬라이더 매수가" min={10} max={25} step={0.5} value={newP} onChange={setNewP} display={f억(newP)}/>
+            <Slider label="매수 연도" min={2027} max={2040} step={1} value={newYr} onChange={setNewYr} display={`${newYr}년`}/>
+            <Slider label="슬라이더 매수가" min={5} max={50} step={0.5} value={newP} onChange={setNewP} display={f억(newP)}/>
             <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
               <span style={{fontSize:12,color:"#666",minWidth:80}}>목표 매수가</span>
-              <input type="number" value={newD} onChange={e=>setNewD(e.target.value)} placeholder="자동" step="0.1" style={NB(!!newD)}/>
+              <input type="number" value={newD} onChange={e=>setNewD(e.target.value)} placeholder="자동" step="0.1"
+                style={{width:72,fontSize:13,padding:"3px 7px",borderRadius:6,border:`0.5px solid ${newD?"#378ADD":"rgba(0,0,0,0.2)"}`,background:newD?"#E6F1FB":"#f5f5f5",textAlign:"right"}}/>
               <span style={{fontSize:11,color:"#999"}}>억</span>
             </div>
           </div>
           <div>
-            <Slider label="신규 대출 (주담대 기준)" min={0} max={8} step={0.5} value={newL} onChange={v=>{setNewL(v);setMortLoanAdj(0);}} display={f억(newL)}/>
+            <Slider label="신규 대출 (주담대 기준)" min={0} max={20} step={0.5} value={newL} onChange={v=>{setNewL(v);setMortLoanAdj(0);}} display={f억(newL)}/>
             <Slider label="연 상승률" min={0} max={20} step={0.5} value={newRt} onChange={setNewRt} display={`${newRt}%`}/>
+            <div style={{background:"#EAF3DE",borderRadius:6,padding:"8px 10px",fontSize:12}}>
+              <div style={{color:"#3B6D11",marginBottom:2}}>목표연도 부동산 가치</div>
+              <div style={{fontSize:16,fontWeight:700,color:"#27500A"}}>{f억(aptFinal)}</div>
+              <div style={{fontSize:11,color:"#639922"}}>{targetYr}년 기준, 대출 차감</div>
+            </div>
           </div>
         </div>
-        <div style={G4}>
-          <MC label="화랑대 매도가" value={f억(hwSell)} sub={`세금 ${f억2(hwTax)}`} color="blue"/>
-          <MC label="광명 매도가" value={f억(gmSell)} sub={hwFirst?(gmSell<=12?"비과세 ✓":`세금 ${f억2(gmTax)}`):(`세금 ${f억2(gmTax)}`)} color="blue"/>
-          <MC label="매도 후 현금풀" value={f억2(pool)} sub="세금·대출·전세 차감" color="amber"/>
-          <MC label="목표연도 부동산" value={f억(aptFinal)} sub={`${targetYr}년, 대출차감`} color="green"/>
-        </div>
       </div>
- 
-      {/* ── 현금흐름 */}
+
+            {/* ── 현금흐름 */}
       <div style={P}><div style={PT}>현금흐름 및 금융자산</div>
         <div style={G2}>
           <div>
@@ -674,7 +911,7 @@ function App(){
           <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#bbb",marginBottom:10}}>
             <span>저축 합계 {fM2억(allY)}/년</span><span>가용 한도 {fM2억(availY)}/년</span>
           </div>
- 
+
           {/* 월 여윳돈 게이지바 */}
           {(()=>{
             const remM = Math.round(remY/12); // 만원/월
@@ -771,21 +1008,58 @@ function App(){
               <Toggle on={dcOn} onChange={setDcOn} label={dcOn?"적용 중":"미적용"}/>
             </div>
           </div>
-          {dcOn&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-            <div>
-              <Slider label="연간 납입액 (회사+본인)" min={0} max={3000} step={100} value={dcY} onChange={setDcY} display={`${fM(dcY)}/년 (${fM(Math.round(dcY/12))}/월)`}/>
-              <Slider label="운용 수익률" min={0} max={15} step={0.5} value={dcRt} onChange={setDcRt} display={`${dcRt}%/년`}/>
+          {dcOn&&<div>
+            {/* DB/DC 선택 탭 */}
+            <div style={{display:"flex",gap:8,marginBottom:12}}>
+              {['DB','DC'].map(t=><button key={t} onClick={()=>setDcType(t)}
+                style={{flex:1,padding:"8px 0",borderRadius:7,
+                        border:`1.5px solid ${dcType===t?"#C06030":"rgba(0,0,0,0.15)"}`,
+                        background:dcType===t?"#FFF5EE":"#fff",
+                        color:dcType===t?"#8B4513":"#666",
+                        fontWeight:dcType===t?700:400,fontSize:13,cursor:"pointer"}}>
+                {t}형 {t==='DB'?'— 확정급여 (회사 적립)':'— 확정기여 (본인 납입)'}
+              </button>)}
             </div>
-            <div>
-              <div style={{marginBottom:8}}>
-                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
-                  <span style={{fontSize:12,color:"#666"}}>현재 적립금</span>
-                  <span style={{fontSize:12,fontWeight:600}}>{fM(dcEx)}</span>
-                </div>
-                <input type="range" min={0} max={10000} step={100} value={dcEx} onChange={e=>setDcEx(Number(e.target.value))} style={{width:"100%",accentColor:"#C06030"}}/>
+            {/* 타입별 안내 */}
+            {dcType==='DB'&&<div style={{padding:"8px 12px",background:"#E6F1FB",borderRadius:7,
+                fontSize:11,color:"#185FA5",marginBottom:12,lineHeight:1.7,border:"0.5px solid #378ADD55"}}>
+              ℹ️ <strong>DB형</strong>은 회사가 전액 적립합니다<br/>
+              월급에서 차감되지 않으므로 <strong>가용자산 계산에서 제외</strong>되고,<br/>
+              금융자산 누적에만 포함됩니다 (적립금 + 목표연도까지 복리 성장)
+            </div>}
+            {dcType==='DC'&&<div style={{padding:"8px 12px",background:"#FAEEDA",borderRadius:7,
+                fontSize:11,color:"#854F0B",marginBottom:12,lineHeight:1.7,border:"0.5px solid #BA751755"}}>
+              ℹ️ <strong>DC형</strong>은 본인 납입분이 월급에서 차감됩니다<br/>
+              납입액이 <strong>가용자산에서 차감</strong>되어 여윳돈에 반영됩니다
+            </div>}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+              <div>
+                <Slider label={dcType==='DB'?"연간 회사 적립액 (세전)":"연간 납입액 (회사+본인)"}
+                  min={0} max={3000} step={100} value={dcY} onChange={setDcY}
+                  display={`${fM(dcY)}/년 (${fM(Math.round(dcY/12))}/월)`}/>
+                <Slider label="운용 수익률" min={0} max={15} step={0.5} value={dcRt}
+                  onChange={setDcRt} display={`${dcRt}%/년`}/>
               </div>
-              <div style={{background:"#FFF5EE",borderRadius:6,padding:"8px 10px",fontSize:11,color:"#8B4513",border:"0.5px solid #E8C4A0"}}>
-                목표연도 누적: <strong>{f억(ca["dc"]||0)}</strong> / 납입원금 {fM(dcY*savYrs)}+적립금 {fM(dcEx)}
+              <div>
+                <div style={{marginBottom:8}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                    <span style={{fontSize:12,color:"#666"}}>현재 적립금</span>
+                    <span style={{fontSize:12,fontWeight:600}}>{fM(dcEx)}</span>
+                  </div>
+                  <input type="range" min={0} max={10000} step={100} value={dcEx}
+                    onChange={e=>setDcEx(Number(e.target.value))}
+                    style={{width:"100%",accentColor:"#C06030"}}/>
+                  <div style={{fontSize:10,color:"#bbb",marginTop:2}}>현재 적립된 퇴직연금 잔액</div>
+                </div>
+                <div style={{background:"#FFF5EE",borderRadius:6,padding:"8px 10px",fontSize:11,color:"#8B4513",border:"0.5px solid #E8C4A0",lineHeight:1.7}}>
+                  목표연도 누적: <strong>{f억(ca["dc"]||0)}</strong><br/>
+                  {dcType==='DB'
+                    ?`회사 적립 ${fM(dcY*savYrs)} + 현재적립금 ${fM(dcEx)}`
+                    :`납입원금 ${fM(dcY*savYrs)} + 적립금 ${fM(dcEx)}`}<br/>
+                  <span style={{color:dcType==='DB'?"#185FA5":"#854F0B",fontSize:10}}>
+                    {dcType==='DB'?"✅ 가용자산 차감 없음":"⚠️ 가용자산에서 차감됨"}
+                  </span>
+                </div>
               </div>
             </div>
           </div>}
@@ -799,16 +1073,16 @@ function App(){
           <MC label="금융자산 CAGR" value={p1(finAnnR)} sub={`${totalYrs}년 기준`} color="teal"/>
         </div>
       </div>
- 
+
       {/* ── 은퇴 소득 계산기 */}
       <div style={P}><div style={PT}>은퇴 소득 계산기</div>
- 
+
         {/* 물가상승률 */}
         <div style={{marginBottom:12}}>
           <Slider label="물가상승률 (현재가치 환산 기준)" min={0} max={5} step={0.1} value={infRate} onChange={setInfRate}
             display={`${infRate}% (${totalYrs}년 후 현재가치 = 미래가치 ÷ ${pvFactor.toFixed(2)})`} color="#9B59B6"/>
         </div>
- 
+
         <div style={G2}>
           <div>
             <div style={SEC}>국민연금</div>
@@ -832,13 +1106,13 @@ function App(){
             </div>
           </div>
         </div>
- 
+
         {/* ── 금융자산 인출 전략 */}
         <div style={{background:"#F8F6FF",borderRadius:10,padding:14,marginTop:12,border:"0.5px solid #C5BAF5"}}>
           <div style={{fontSize:12,fontWeight:600,color:"#3C3489",marginBottom:12,display:"flex",alignItems:"center",gap:6}}>
             <span style={{fontSize:16}}>💰</span> 금융자산 인출 전략 설계
           </div>
- 
+
           {/* 포트 비중 */}
           <div style={{marginBottom:14}}>
             <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
@@ -856,7 +1130,7 @@ function App(){
               <span>■ 매도 포트 {f억(sellPortAmt)}</span>
             </div>
           </div>
- 
+
           <div style={G2}>
             {/* 배당 포트 */}
             <div style={{background:"#EEEDFE",borderRadius:8,padding:12,border:"0.5px solid #AFA9EC"}}>
@@ -875,7 +1149,7 @@ function App(){
                 </div>
               </div>
             </div>
- 
+
             {/* 매도 포트 */}
             <div style={{background:"#E1F5EE",borderRadius:8,padding:12,border:"0.5px solid #5DCAA5"}}>
               <div style={{fontSize:11,fontWeight:600,color:"#0F6E56",marginBottom:10}}>💹 매도 포트 ({100-divPct}%) — {f억(sellPortAmt)}</div>
@@ -893,7 +1167,7 @@ function App(){
                   <div style={{fontSize:10,color:"#5DCAA5",marginTop:2}}>현재가치 {fM(Math.round(sellIncomeM_pv))}</div>
                 </div>
               </div>
- 
+
               {/* 순수익 (비상자금) */}
               {(()=>{
                 const netRt = sellPortRt - annSellPct; // 순 추가 수익률
@@ -931,7 +1205,7 @@ function App(){
             </div>
           </div>
         </div>
- 
+
         {/* 국민연금 + 주택연금 카드 */}
         <div style={{...G3,marginTop:12}}>
           <MC label="국민연금 합산 (월)" value={`${fM(penSum)}/월`}
@@ -950,7 +1224,7 @@ function App(){
             <div style={{fontSize:10,color:"#639922",marginTop:1}}>현재가치 {fM(Math.round(divIncomeM_pv+sellIncomeM_pv))}/월</div>
           </div>
         </div>
- 
+
         {/* 은퇴 후 총 월수입 */}
         <div style={{...G2,marginTop:10}}>
           <div style={{background:"#EAF3DE",borderRadius:8,padding:"12px 14px"}}>
@@ -967,7 +1241,7 @@ function App(){
           </div>
         </div>
       </div>
- 
+
       {/* ── 총자산 */}
       <div style={{...P,borderColor:"rgba(0,0,0,0.15)"}}><div style={PT}>은퇴 목표 — 총자산 및 수익률 종합</div>
         <div style={G3}>
@@ -981,7 +1255,7 @@ function App(){
         </div>
         <div style={{marginTop:14}}>
           <RetBox title="부동산" items={[
-            {label:"투자 원가",value:f억(aptCost),sub:"화랑대+광명"},
+            {label:"투자 원가",value:f억(aptCost),sub:"보유 아파트 합산"},
             {label:"목표연도 가치",value:f억(aptFinal),sub:`${targetYr}년 (대출차감)`},
             {label:"누적 수익률",value:p1(aptCumR),color:"#27500A"},
             {label:"연평균 CAGR",value:p1(aptAnnR),sub:`${totalYrs}년 기준`,color:"#27500A"},
@@ -1022,7 +1296,7 @@ function App(){
     </div>
   </div>;
 }
- 
+
 const root=ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App/>);
 </script>
